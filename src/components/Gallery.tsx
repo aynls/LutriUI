@@ -116,7 +116,6 @@ export default function Gallery(p: {
       tag,
       createdFrom: localDayStart(fromDay),
       createdUntil: localDayEnd(toDay),
-      favorite: null,
       boardId,
       availability,
       sort,

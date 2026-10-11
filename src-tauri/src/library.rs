@@ -18,7 +18,7 @@ pub(crate) const THUMB_SIZE: u32 = 384;
 const MAX_FILE: u64 = 64 * 1024 * 1024;
 const MAX_DATA_URL: usize = 90_000_000;
 const MAX_PIXELS: u64 = 64_000_000;
-pub(crate) const SUPPORTED_VERSION: i64 = 2;
+pub(crate) const SUPPORTED_VERSION: i64 = 3;
 
 pub struct LibraryStore {
     pub(crate) root: PathBuf,
@@ -70,7 +70,7 @@ impl LibraryStore {
         let version: i64 = conn
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .map_err(|e| store_failed("inspect library database", e))?;
-        if version != 0 && version != 1 && version != SUPPORTED_VERSION {
+        if version != 0 && version != 1 && version != 2 && version != SUPPORTED_VERSION {
             return Err(String::from(
                 ProviderError::coded(
                     "backend_library_unsupported",
@@ -85,8 +85,8 @@ impl LibraryStore {
         } else {
             conn.execute_batch("PRAGMA journal_mode = WAL;")
                 .map_err(|e| store_failed("configure library database", e))?;
-            if version == 1 {
-                migrate_v1_to_v2(&conn).map_err(|e| store_failed("upgrade library database", e))?;
+            if version < SUPPORTED_VERSION {
+                migrate_library(&conn).map_err(|e| store_failed("upgrade library database", e))?;
             }
         }
         // Feature tables outside user_version run for both new and existing libraries.
@@ -165,39 +165,31 @@ impl LibraryStore {
     }
 }
 
-fn migrate_v1_to_v2(conn: &Connection) -> Result<(), rusqlite::Error> {
+fn migrate_library(conn: &Connection) -> Result<(), rusqlite::Error> {
     conn.execute_batch(library_sql::BOARDS_SCHEMA)?;
-    let starred: Vec<(String, i64)> = {
-        let mut stmt = conn.prepare(
-            "SELECT id, created_at FROM assets WHERE favorite = 1 AND pending_delete = 0 ORDER BY created_at, id",
-        )?;
-        let rows = stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?;
-        rows.collect::<Result<Vec<_>, _>>()?
-    };
-    if !starred.is_empty() {
-        let board_id = Uuid::new_v4().to_string();
-        let created_at = starred
-            .iter()
-            .map(|(_, t)| *t)
-            .min()
-            .unwrap_or(0);
-        conn.execute(
-            library_sql::BOARD_INSERT,
-            rusqlite::params![
-                board_id,
-                library_sql::FAVORITES_BOARD_NAME,
-                created_at,
-                0i64
-            ],
-        )?;
-        for (asset_id, added_at) in starred {
-            conn.execute(
-                library_sql::BOARD_ADD_ASSET,
-                rusqlite::params![board_id, asset_id, added_at],
-            )?;
-        }
-    }
+    drop_favorite_column(conn)?;
     conn.pragma_update(None, "user_version", SUPPORTED_VERSION)?;
+    Ok(())
+}
+
+fn drop_favorite_column(conn: &Connection) -> Result<(), rusqlite::Error> {
+    let has_favorite = {
+        let mut stmt = conn.prepare("PRAGMA table_info(assets)")?;
+        let names = stmt.query_map([], |r| r.get::<_, String>(1))?;
+        let mut found = false;
+        for name in names {
+            if name? == "favorite" {
+                found = true;
+                break;
+            }
+        }
+        found
+    };
+    if has_favorite {
+        conn.execute_batch(
+            "DROP INDEX IF EXISTS assets_favorite_date; ALTER TABLE assets DROP COLUMN favorite;",
+        )?;
+    }
     Ok(())
 }
 

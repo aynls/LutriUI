@@ -207,7 +207,7 @@
     },
     {
       "name": "gallery_query",
-      "description": "Find reusable gallery assets by name, prompt, tag, source, model, favorite, availability or creation time. Returns metadata and stable asset IDs without image bytes or filesystem paths. Use gallery_read to inspect an image and workspace_patch.refs to reuse it. Omitting query or passing an empty query object uses the default page and filters.",
+      "description": "Find reusable gallery assets by name, prompt, tag, source, model, board, availability or creation time. Returns metadata, stable asset IDs and boardIds, plus the full board list, without image bytes or filesystem paths. Pass boardId to list one board. Use gallery_board to create, rename, delete boards or change membership. Use gallery_read to inspect an image and workspace_patch.refs to reuse it. Omitting query or passing an empty query object uses the default page and filters.",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -220,7 +220,7 @@
               "tag": { "type": ["string", "null"] },
               "createdFrom": { "type": ["integer", "null"], "minimum": 0, "maximum": 8640000000000000 },
               "createdUntil": { "type": ["integer", "null"], "minimum": 0, "maximum": 8640000000000000 },
-              "favorite": { "type": ["boolean", "null"] },
+              "boardId": { "type": ["string", "null"], "format": "uuid" },
               "availability": { "type": "string", "enum": ["all", "available", "missing", "pending"] },
               "sort": { "type": "string", "enum": ["newest", "oldest", "name", "size"] },
               "offset": { "type": "integer", "minimum": 0, "maximum": 2147483647 },
@@ -260,6 +260,99 @@
         "additionalProperties": false
       },
       "annotations": { "readOnlyHint": false, "destructiveHint": false, "idempotentHint": false, "openWorldHint": false }
+    },
+    {
+      "name": "gallery_board",
+      "description": "List, create, rename or delete flat gallery boards, and add, remove or move assets between them. Boards are not nested. Membership is boardIds on gallery assets. Use gallery_query with boardId to list a board's images.",
+      "inputSchema": {
+        "type": "object",
+        "oneOf": [
+          {
+            "type": "object",
+            "properties": { "op": { "type": "string", "const": "list" } },
+            "required": ["op"],
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "properties": {
+              "op": { "type": "string", "const": "create" },
+              "name": { "type": "string", "minLength": 1, "maxLength": 80 }
+            },
+            "required": ["op", "name"],
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "properties": {
+              "op": { "type": "string", "const": "rename" },
+              "boardId": { "type": "string", "format": "uuid" },
+              "name": { "type": "string", "minLength": 1, "maxLength": 80 }
+            },
+            "required": ["op", "boardId", "name"],
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "properties": {
+              "op": { "type": "string", "const": "delete" },
+              "boardId": { "type": "string", "format": "uuid" }
+            },
+            "required": ["op", "boardId"],
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "properties": {
+              "op": { "type": "string", "const": "add" },
+              "boardId": { "type": "string", "format": "uuid" },
+              "assetIds": {
+                "type": "array",
+                "minItems": 1,
+                "maxItems": 500,
+                "uniqueItems": true,
+                "items": { "type": "string", "format": "uuid" }
+              }
+            },
+            "required": ["op", "boardId", "assetIds"],
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "properties": {
+              "op": { "type": "string", "const": "remove" },
+              "boardId": { "type": "string", "format": "uuid" },
+              "assetIds": {
+                "type": "array",
+                "minItems": 1,
+                "maxItems": 500,
+                "uniqueItems": true,
+                "items": { "type": "string", "format": "uuid" }
+              }
+            },
+            "required": ["op", "boardId", "assetIds"],
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "properties": {
+              "op": { "type": "string", "const": "move" },
+              "fromBoardId": { "type": "string", "format": "uuid" },
+              "toBoardId": { "type": "string", "format": "uuid" },
+              "assetIds": {
+                "type": "array",
+                "minItems": 1,
+                "maxItems": 500,
+                "uniqueItems": true,
+                "items": { "type": "string", "format": "uuid" }
+              }
+            },
+            "required": ["op", "fromBoardId", "toBoardId", "assetIds"],
+            "additionalProperties": false
+          }
+        ]
+      },
+      "annotations": { "readOnlyHint": false, "destructiveHint": true, "idempotentHint": false, "openWorldHint": false }
     }
   ]
 }

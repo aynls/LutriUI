@@ -53,7 +53,6 @@ pub struct GalleryItem {
     pub details: Option<GenerationDetails>,
     pub file_path: String,
     pub byte_size: u64,
-    pub favorite: bool,
     pub board_ids: Vec<String>,
     pub tags: Vec<String>,
     pub availability: String,
@@ -71,7 +70,6 @@ pub struct GalleryQuery {
     pub tag: Option<String>,
     pub created_from: Option<u64>,
     pub created_until: Option<u64>,
-    pub favorite: Option<bool>,
     pub board_id: Option<String>,
     pub availability: String,
     pub sort: String,
@@ -88,7 +86,6 @@ impl Default for GalleryQuery {
             tag: None,
             created_from: None,
             created_until: None,
-            favorite: None,
             board_id: None,
             availability: "all".into(),
             sort: "newest".into(),
@@ -118,7 +115,6 @@ pub struct GalleryFacets {
 #[serde(rename_all = "camelCase")]
 pub struct GalleryPatch {
     pub name: Option<String>,
-    pub favorite: Option<bool>,
     pub add_tags: Option<Vec<String>>,
     pub remove_tags: Option<Vec<String>>,
 }
@@ -152,7 +148,6 @@ pub struct GalleryBatchResult {
 pub struct LibraryStats {
     pub total_count: u64,
     pub missing_count: u64,
-    pub favorite_count: u64,
     pub pending_delete_count: u64,
     pub original_bytes: u64,
     pub thumbnail_bytes: u64,
@@ -224,45 +219,6 @@ fn board_missing() -> String {
     ))
 }
 
-fn favorites_board_in(tx: &rusqlite::Transaction<'_>) -> Result<String, String> {
-    let existing: Option<String> = tx
-        .query_row(
-            "SELECT id FROM boards WHERE name = ?1 ORDER BY created_at, id LIMIT 1",
-            [library_sql::FAVORITES_BOARD_NAME],
-            |r| r.get(0),
-        )
-        .optional()
-        .map_err(|e| db_failed("lookup board", e))?;
-    if let Some(id) = existing {
-        return Ok(id);
-    }
-    let count: i64 = tx
-        .query_row("SELECT COUNT(*) FROM boards", [], |r| r.get(0))
-        .map_err(|e| db_failed("count boards", e))?;
-    if count >= MAX_BOARDS {
-        return Err(invalid("too many boards"));
-    }
-    let id = Uuid::new_v4().to_string();
-    let sort: i64 = tx
-        .query_row(
-            "SELECT COALESCE(MAX(sort_order), -1) + 1 FROM boards",
-            [],
-            |r| r.get(0),
-        )
-        .map_err(|e| db_failed("order boards", e))?;
-    tx.execute(
-        library_sql::BOARD_INSERT,
-        params_from_iter([
-            Value::Text(id.clone()),
-            Value::Text(library_sql::FAVORITES_BOARD_NAME.to_string()),
-            Value::Integer(now_ms() as i64),
-            Value::Integer(sort),
-        ]),
-    )
-    .map_err(|e| db_failed("create board", e))?;
-    Ok(id)
-}
-
 fn load_board(conn: &rusqlite::Connection, id: &str) -> Result<Option<Board>, String> {
     conn.query_row(
         r#"
@@ -290,8 +246,8 @@ fn item_from_row(root: &Path, row: &Row) -> Result<GalleryItem, rusqlite::Error>
     let id: String = row.get(0)?;
     let mime: String = row.get(5)?;
     let details_json: Option<String> = row.get(11)?;
-    let tags_json: String = row.get(18)?;
-    let board_ids_json: String = row.get(19)?;
+    let tags_json: String = row.get(17)?;
+    let board_ids_json: String = row.get(18)?;
     Ok(GalleryItem {
         file_path: root
             .join("gallery")
@@ -313,11 +269,10 @@ fn item_from_row(root: &Path, row: &Row) -> Result<GalleryItem, rusqlite::Error>
         prompt: row.get(10)?,
         details: details_json.and_then(|d| serde_json::from_str(&d).ok()),
         byte_size: row.get::<_, i64>(12)? as u64,
-        favorite: row.get::<_, i64>(13)? != 0,
-        pending_delete: row.get::<_, i64>(14)? != 0,
-        availability: row.get(15)?,
-        thumbnail_revision: row.get::<_, i64>(16)? as u64,
-        has_thumbnail: row.get::<_, i64>(17)? != 0,
+        pending_delete: row.get::<_, i64>(13)? != 0,
+        availability: row.get(14)?,
+        thumbnail_revision: row.get::<_, i64>(15)? as u64,
+        has_thumbnail: row.get::<_, i64>(16)? != 0,
         tags: serde_json::from_str(&tags_json).unwrap_or_default(),
         board_ids: serde_json::from_str(&board_ids_json).unwrap_or_default(),
     })
@@ -480,10 +435,6 @@ impl LibraryStore {
                 .unwrap_or(Value::Null),
             query
                 .created_until
-                .map(|v| Value::Integer(v as i64))
-                .unwrap_or(Value::Null),
-            query
-                .favorite
                 .map(|v| Value::Integer(v as i64))
                 .unwrap_or(Value::Null),
             Value::Text(query.availability.clone()),
@@ -666,11 +617,7 @@ impl LibraryStore {
         patch: GalleryPatch,
     ) -> Result<Vec<GalleryItem>, String> {
         validate_mutation_ids(ids)?;
-        if patch.name.is_none()
-            && patch.favorite.is_none()
-            && patch.add_tags.is_none()
-            && patch.remove_tags.is_none()
-        {
+        if patch.name.is_none() && patch.add_tags.is_none() && patch.remove_tags.is_none() {
             return Err(invalid("empty patch"));
         }
         let name = patch
@@ -751,25 +698,6 @@ impl LibraryStore {
                     ]),
                 )
                 .map_err(|e| db_failed("rename image", e))?;
-            }
-            if let Some(favorite) = patch.favorite {
-                if favorite {
-                    let board_id = favorites_board_in(&tx)?;
-                    tx.execute(
-                        library_sql::BOARD_ADD_ASSET,
-                        params_from_iter([
-                            Value::Text(board_id),
-                            Value::Text(item.id.clone()),
-                            Value::Integer(now_ms() as i64),
-                        ]),
-                    )
-                    .map_err(|e| db_failed("add to board", e))?;
-                } else {
-                    tx.execute("DELETE FROM board_assets WHERE asset_id = ?1", [&item.id])
-                        .map_err(|e| db_failed("leave boards", e))?;
-                }
-                tx.execute(library_sql::FAVORITE_FROM_MEMBERSHIP, [&item.id])
-                    .map_err(|e| db_failed("update image", e))?;
             }
             for tag in &add {
                 tx.execute(
@@ -985,34 +913,13 @@ ORDER BY b.sort_order ASC, b.created_at ASC, b.id ASC
 
     pub fn board_delete(&mut self, id: &str) -> Result<(), String> {
         crate::library::validate_id(id)?;
-        let members: Vec<String> = {
-            let mut stmt = self
-                .conn
-                .prepare("SELECT asset_id FROM board_assets WHERE board_id = ?1")
-                .map_err(|e| db_failed("list board images", e))?;
-            let rows = stmt
-                .query_map([id], |r| r.get(0))
-                .map_err(|e| db_failed("list board images", e))?
-                .collect::<Result<Vec<_>, _>>()
-                .map_err(|e| db_failed("list board images", e))?;
-            rows
-        };
-        let tx = self
+        let changed = self
             .conn
-            .transaction()
-            .map_err(|e| db_failed("delete board", e))?;
-        let changed = tx
             .execute(library_sql::BOARD_DELETE, [id])
             .map_err(|e| db_failed("delete board", e))?;
         if changed == 0 {
-            let _ = tx.rollback();
             return Err(board_missing());
         }
-        for asset_id in members {
-            tx.execute(library_sql::FAVORITE_FROM_MEMBERSHIP, [&asset_id])
-                .map_err(|e| db_failed("update image", e))?;
-        }
-        tx.commit().map_err(|e| db_failed("delete board", e))?;
         Ok(())
     }
 
@@ -1090,8 +997,6 @@ ORDER BY b.sort_order ASC, b.created_at ASC, b.id ASC
                     ]),
                 )
                 .map_err(|e| db_failed("leave board", e))?;
-                tx.execute(library_sql::FAVORITE_FROM_MEMBERSHIP, [id])
-                    .map_err(|e| db_failed("update image", e))?;
                 Ok(())
             })();
             match step {
@@ -1165,8 +1070,6 @@ ORDER BY b.sort_order ASC, b.created_at ASC, b.id ASC
                         .map_err(|e| db_failed("leave board", e))?;
                     }
                 }
-                tx.execute(library_sql::FAVORITE_FROM_MEMBERSHIP, [id])
-                    .map_err(|e| db_failed("update image", e))?;
                 Ok(())
             })();
             match step {
@@ -1201,7 +1104,6 @@ ORDER BY b.sort_order ASC, b.created_at ASC, b.id ASC
         let (
             total_count,
             missing_count,
-            favorite_count,
             pending_delete_count,
             original_bytes,
             thumbnail_bytes,
@@ -1213,11 +1115,10 @@ ORDER BY b.sort_order ASC, b.created_at ASC, b.id ASC
                     r.get::<_, i64>(0)?,
                     r.get::<_, i64>(1)?,
                     r.get::<_, i64>(2)?,
-                    r.get::<_, i64>(3)?,
+                    r.get::<_, Option<i64>>(3)?,
                     r.get::<_, Option<i64>>(4)?,
-                    r.get::<_, Option<i64>>(5)?,
-                    r.get::<_, i64>(6)?,
-                    r.get::<_, Option<String>>(7)?,
+                    r.get::<_, i64>(5)?,
+                    r.get::<_, Option<String>>(6)?,
                 ))
             })
             .map_err(|e| db_failed("measure library", e))?;
@@ -1240,7 +1141,6 @@ ORDER BY b.sort_order ASC, b.created_at ASC, b.id ASC
         Ok(LibraryStats {
             total_count: total_count as u64,
             missing_count: missing_count as u64,
-            favorite_count: favorite_count as u64,
             pending_delete_count: pending_delete_count as u64,
             original_bytes: original_bytes.unwrap_or(0) as u64,
             thumbnail_bytes: thumbnail_bytes.unwrap_or(0) as u64,
@@ -1552,17 +1452,28 @@ pub(crate) mod tests {
         std::fs::remove_dir_all(dir).unwrap();
     }
 
-    fn star(favorite: bool) -> GalleryPatch {
-        GalleryPatch {
-            name: None,
-            favorite: Some(favorite),
-            add_tags: None,
-            remove_tags: None,
-        }
+    fn has_favorite_column(store: &LibraryStore) -> bool {
+        let mut stmt = store.conn.prepare("PRAGMA table_info(assets)").unwrap();
+        let names: Vec<String> = stmt
+            .query_map([], |r| r.get::<_, String>(1))
+            .unwrap()
+            .map(|name| name.unwrap())
+            .collect();
+        names.iter().any(|name| name == "favorite")
+    }
+
+    fn add_legacy_favorite_column(store: &LibraryStore) {
+        store
+            .conn
+            .execute_batch(
+                "ALTER TABLE assets ADD COLUMN favorite INTEGER NOT NULL DEFAULT 0;
+                 CREATE INDEX IF NOT EXISTS assets_favorite_date ON assets(favorite, created_at DESC, id DESC);",
+            )
+            .unwrap();
     }
 
     #[test]
-    fn boards_hold_assets_and_replace_favorites() {
+    fn boards_hold_and_move_assets() {
         let dir = temp();
         let mut store = LibraryStore::new(dir.clone()).unwrap();
         let a = store.gallery_import(&png(), "a", "file").unwrap();
@@ -1581,11 +1492,8 @@ pub(crate) mod tests {
             .unwrap();
         assert_eq!(page.total, 1);
         assert_eq!(page.items[0].id, a.id);
-        assert!(page.items[0].favorite);
         assert_eq!(page.items[0].board_ids, vec![board.id.clone()]);
-        store
-            .board_add(&board.id, &[b.id.clone()])
-            .unwrap();
+        store.board_add(&board.id, &[b.id.clone()]).unwrap();
         let other = store.board_create("Keep").unwrap();
         store
             .board_move(&board.id, &other.id, &[a.id.clone()])
@@ -1600,7 +1508,6 @@ pub(crate) mod tests {
         assert_eq!(looks.items[0].id, b.id);
         store.board_remove(&other.id, &[a.id.clone()]).unwrap();
         let a = store.find_asset(&a.id).unwrap().unwrap();
-        assert!(!a.favorite);
         assert!(a.board_ids.is_empty());
         store.board_rename(&other.id, "Kept").unwrap();
         store.board_delete(&board.id).unwrap();
@@ -1610,15 +1517,22 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn migrates_starred_assets_into_a_favorites_board() {
+    fn v1_libraries_gain_empty_boards_without_importing_stars() {
         let dir = temp();
         let mut store = LibraryStore::new(dir.clone()).unwrap();
         let kept = store.gallery_import(&png(), "kept", "file").unwrap();
-        let _plain = store.gallery_import(&png(), "plain", "file").unwrap();
-        store.gallery_patch(&[kept.id.clone()], star(true)).unwrap();
         store
             .conn
-            .execute_batch("DROP TABLE board_assets; DROP TABLE boards; PRAGMA user_version = 1;")
+            .execute_batch("DROP TABLE board_assets; DROP TABLE boards;")
+            .unwrap();
+        add_legacy_favorite_column(&store);
+        store
+            .conn
+            .execute("UPDATE assets SET favorite = 1 WHERE id = ?1", [&kept.id])
+            .unwrap();
+        store
+            .conn
+            .execute_batch("PRAGMA user_version = 1;")
             .unwrap();
         drop(store);
         let store = LibraryStore::new(dir.clone()).unwrap();
@@ -1626,40 +1540,42 @@ pub(crate) mod tests {
             .conn
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(version, 2);
-        let boards = store.board_list().unwrap();
-        assert_eq!(boards.len(), 1);
-        assert_eq!(boards[0].name, "收藏");
-        assert_eq!(boards[0].asset_count, 1);
-        let page = store
-            .gallery_query(GalleryQuery {
-                board_id: Some(boards[0].id.clone()),
-                ..query_all()
-            })
-            .unwrap();
-        assert_eq!(page.items[0].id, kept.id);
-        let starred = store
-            .gallery_query(GalleryQuery {
-                favorite: Some(true),
-                ..query_all()
-            })
-            .unwrap();
-        assert_eq!(starred.total, 1);
+        assert_eq!(version, 3);
+        assert!(store.board_list().unwrap().is_empty());
+        assert!(!has_favorite_column(&store));
+        assert!(store.find_asset(&kept.id).unwrap().is_some());
         drop(store);
         std::fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]
-    fn v1_libraries_without_stars_gain_empty_boards() {
+    fn v2_libraries_drop_favorite_and_keep_boards() {
         let dir = temp();
-        let store = LibraryStore::new(dir.clone()).unwrap();
+        let mut store = LibraryStore::new(dir.clone()).unwrap();
+        let asset = store.gallery_import(&png(), "kept", "file").unwrap();
+        let board = store.board_create("Looks").unwrap();
+        store.board_add(&board.id, &[asset.id.clone()]).unwrap();
+        add_legacy_favorite_column(&store);
         store
             .conn
-            .execute_batch("DROP TABLE board_assets; DROP TABLE boards; PRAGMA user_version = 1;")
+            .execute("UPDATE assets SET favorite = 1 WHERE id = ?1", [&asset.id])
+            .unwrap();
+        store
+            .conn
+            .execute_batch("PRAGMA user_version = 2;")
             .unwrap();
         drop(store);
         let store = LibraryStore::new(dir.clone()).unwrap();
-        assert!(store.board_list().unwrap().is_empty());
+        let version: i64 = store
+            .conn
+            .query_row("PRAGMA user_version", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(version, 3);
+        assert!(!has_favorite_column(&store));
+        let boards = store.board_list().unwrap();
+        assert_eq!(boards.len(), 1);
+        assert_eq!(boards[0].name, "Looks");
+        assert_eq!(boards[0].asset_count, 1);
         drop(store);
         std::fs::remove_dir_all(dir).unwrap();
     }
