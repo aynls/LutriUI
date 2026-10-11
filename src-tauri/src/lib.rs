@@ -4,6 +4,7 @@ mod history;
 pub mod library;
 mod library_access;
 mod library_sql;
+pub mod llm;
 pub mod mcp;
 pub mod models;
 pub mod provider;
@@ -96,6 +97,7 @@ pub fn run() {
             assets.allow_directory(dir.join("images"), true)?;
             assets.allow_directory(dir.join("gallery/images"), true)?;
             provider::init_key_settings(&app_data)?;
+            llm::init(&app_data)?;
             *app.state::<AppState>().library.lock().unwrap() = Some(store);
             let state = app.state::<AppState>();
             state
@@ -113,6 +115,12 @@ pub fn run() {
             commands::credential_remove,
             commands::credential_check,
             commands::credential_configure,
+            commands::llm_status,
+            commands::llm_configure,
+            commands::llm_credential_save,
+            commands::llm_credential_remove,
+            commands::llm_check,
+            commands::prompt_optimize,
             commands::draft_load,
             commands::draft_save,
             commands::import_url,

@@ -30,12 +30,17 @@ import type {
 export class AppError extends Error {
   status?: number;
   hint?: string;
+  code?: string;
 
-  constructor(message: string, opts?: { status?: number; hint?: string }) {
+  constructor(
+    message: string,
+    opts?: { status?: number; hint?: string; code?: string },
+  ) {
     super(message);
     this.name = "AppError";
     this.status = opts?.status;
     this.hint = opts?.hint;
+    this.code = opts?.code;
   }
 
   // 字符串化时只输出已本地化的说明，避免界面出现 "AppError: " 前缀。
@@ -61,6 +66,7 @@ function parseBackendError(e: unknown): AppError {
       const params = j.params ?? {};
       return new AppError(localizeMessage(j.code, j.message, params), {
         status: j.status,
+        code: j.code,
         hint:
           j.hint_code != null
             ? localizeMessage(j.hint_code, j.hint ?? "", params)
@@ -171,6 +177,24 @@ export const credentialConfigure = (
   provider: ProviderId,
   settings: CredentialSettings,
 ) => call<void>("credential_configure", { provider, ...settings });
+
+export interface LlmStatus {
+  baseUrl: string;
+  model: string;
+  hasKey: boolean;
+  configured: boolean;
+}
+
+export const llmStatus = () => call<LlmStatus>("llm_status");
+export const llmConfigure = (baseUrl: string, model: string) =>
+  call<void>("llm_configure", { baseUrl, model });
+export const llmCredentialSave = (key: string) =>
+  call<void>("llm_credential_save", { key });
+export const llmCredentialRemove = () => call<void>("llm_credential_remove");
+export const llmCheck = async () =>
+  localizeStored(await call<string>("llm_check"));
+export const promptOptimize = (family: string, userContent: string) =>
+  call<string>("prompt_optimize", { family, userContent });
 export const importUrl = async (url: string) =>
   withDefaultName(await call<ImportedImage>("import_url", { url }), () =>
     m.default_name_web(),

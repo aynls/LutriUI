@@ -6,6 +6,12 @@ import {
   credentialConfigure,
   historyStorage,
   libraryStats,
+  llmStatus,
+  llmConfigure,
+  llmCredentialSave,
+  llmCredentialRemove,
+  llmCheck,
+  type LlmStatus,
 } from "../lib/api";
 import { DEFAULT_PREFERENCES, newDraft } from "../lib/workspace";
 import type {
@@ -197,6 +203,8 @@ export default function Settings({
         </nav>
         <div className="settings-panel">
           {page === "connection" && (
+            <>
+            <LlmSettingsCard />
             <section>
               <h3>{m.settings_connection()}</h3>
               <div className="provider-selector">
@@ -223,6 +231,7 @@ export default function Settings({
                 refresh={refresh}
               />
             </section>
+            </>
           )}
           {page === "defaults" && (
             <>
@@ -566,6 +575,153 @@ export default function Settings({
         </div>
       </div>
     </Modal>
+  );
+}
+function LlmSettingsCard() {
+  const [status, setStatus] = useState<LlmStatus | null>(null);
+  const [baseUrl, setBaseUrl] = useState("");
+  const [model, setModel] = useState("");
+  const [key, setKey] = useState("");
+  const [message, setMessage] = useState("");
+  const [error, setError] = useState("");
+  const [busy, setBusy] = useState(false);
+  const load = async () => {
+    const next = await llmStatus();
+    setStatus(next);
+    setBaseUrl(next.baseUrl);
+    setModel(next.model);
+  };
+  useEffect(() => {
+    load().catch((e) => setError(String(e)));
+  }, []);
+  const changed =
+    !!status &&
+    (baseUrl.trim() !== status.baseUrl || model.trim() !== status.model);
+  const run = async (action: "save" | "saveKey" | "remove" | "check") => {
+    setBusy(true);
+    setMessage("");
+    setError("");
+    try {
+      if (action === "save" || action === "saveKey") {
+        await llmConfigure(baseUrl, model);
+      }
+      if (action === "saveKey") {
+        await llmCredentialSave(key);
+        setKey("");
+      }
+      if (action === "remove") await llmCredentialRemove();
+      if (action === "check") setMessage(await llmCheck());
+      else
+        setMessage(
+          action === "remove"
+            ? m.credential_removed()
+            : action === "saveKey"
+              ? m.credential_saved()
+              : m.settings_llm_saved(),
+        );
+      await load();
+    } catch (e) {
+      setError(String(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+  return (
+    <section>
+      <div className="section-heading">
+        <h3>{m.settings_llm()}</h3>
+        <span className="muted">
+          {status?.configured ? m.state_configured() : m.state_missing_key()}
+        </span>
+      </div>
+      <p className="help">{m.settings_llm_help()}</p>
+      <label>
+        {m.settings_llm_url()}
+        <input
+          disabled={busy}
+          autoComplete="off"
+          spellCheck={false}
+          value={baseUrl}
+          placeholder={m.settings_llm_url_placeholder()}
+          onChange={(e) => {
+            setBaseUrl(e.target.value);
+            setMessage("");
+            setError("");
+          }}
+        />
+      </label>
+      <label>
+        {m.settings_llm_model()}
+        <input
+          disabled={busy}
+          autoComplete="off"
+          spellCheck={false}
+          value={model}
+          placeholder={m.settings_llm_model_placeholder()}
+          onChange={(e) => {
+            setModel(e.target.value);
+            setMessage("");
+            setError("");
+          }}
+        />
+      </label>
+      <label>
+        {m.settings_llm_key()}
+        <input
+          disabled={busy}
+          type="password"
+          autoComplete="off"
+          spellCheck={false}
+          value={key}
+          placeholder={
+            status?.hasKey
+              ? m.credential_stored_hint()
+              : m.credential_clear_hint()
+          }
+          onChange={(e) => setKey(e.target.value)}
+        />
+      </label>
+      <span className="muted">{m.credential_store()}</span>
+      {changed && <p className="help">{m.settings_llm_pending()}</p>}
+      <div className="row">
+        <button
+          disabled={busy || !status || !changed}
+          onClick={() => void run("save")}
+        >
+          {m.settings_llm_save()}
+        </button>
+        <button
+          disabled={busy || !key.trim()}
+          onClick={() => void run("saveKey")}
+        >
+          {m.credential_save()}
+        </button>
+        <button
+          disabled={busy || !status?.hasKey}
+          onClick={() => void run("remove")}
+        >
+          {m.credential_remove()}
+        </button>
+        <button
+          disabled={
+            busy || !status || !status.hasKey || !status.baseUrl.trim() || changed
+          }
+          onClick={() => void run("check")}
+        >
+          {m.credential_check()}
+        </button>
+      </div>
+      {error && (
+        <p className="error-text" role="alert">
+          {error}
+        </p>
+      )}
+      {message && (
+        <p className="help" role="status">
+          {message}
+        </p>
+      )}
+    </section>
   );
 }
 function KeySettingsCard({

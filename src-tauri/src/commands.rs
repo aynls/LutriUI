@@ -348,6 +348,39 @@ pub async fn credential_check(provider: String) -> Result<String, String> {
 }
 
 #[tauri::command]
+pub async fn llm_status() -> Result<crate::llm::LlmStatus, String> {
+    crate::llm::status().map_err(Into::into)
+}
+
+#[tauri::command]
+pub async fn llm_configure(base_url: String, model: String) -> Result<(), String> {
+    crate::llm::save_settings(crate::llm::prepare_settings(base_url, model)?).map_err(Into::into)
+}
+
+#[tauri::command]
+pub async fn llm_credential_save(key: String) -> Result<(), String> {
+    crate::llm::save_key(&key).map_err(Into::into)
+}
+
+#[tauri::command]
+pub async fn llm_credential_remove() -> Result<(), String> {
+    crate::llm::remove_key().map_err(Into::into)
+}
+
+#[tauri::command]
+pub async fn llm_check() -> Result<String, String> {
+    crate::llm::check().await?;
+    Ok("backend_check_verified".into())
+}
+
+#[tauri::command]
+pub async fn prompt_optimize(family: String, user_content: String) -> Result<String, String> {
+    crate::llm::optimize(family, user_content)
+        .await
+        .map_err(Into::into)
+}
+
+#[tauri::command]
 pub async fn draft_load(app: tauri::AppHandle) -> Result<Option<serde_json::Value>, String> {
     with_library(app, |store| store.draft_load()).await
 }
