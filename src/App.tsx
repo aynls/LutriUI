@@ -1137,6 +1137,8 @@ export default function App() {
               errors={errors}
               onGenerate={(count) => void generate(count)}
               onSettings={() => setSettings(true)}
+              getVersion={ws.getVersion}
+              applyOptimizedPrompt={ws.applyOptimizedPrompt}
             />
           ) : (
             <>

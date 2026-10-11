@@ -711,7 +711,7 @@
   "prompt_optimize_hint": "Rewrite the current prompt for this model. Does not generate an image.",
   "prompt_optimize_desktop": "Prompt optimize requires the desktop app",
   "prompt_optimize_empty": "The model returned an empty prompt",
-  "prompt_optimize_stale": "The task changed. Run Optimize again.",
+  "prompt_optimize_stale": "The draft changed. Run Optimize again.",
   "prompt_optimize_open_settings": "Open settings",
   "settings_defaults": "Defaults for new work",
   "settings_appearance": "Appearance",

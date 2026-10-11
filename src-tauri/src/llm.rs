@@ -94,6 +94,36 @@ pub fn system_prompt(family: &str) -> String {
     }
 }
 
+fn secret_param_name(name: &str) -> bool {
+    const NAMES: &[&str] = &[
+        "key",
+        "api_key",
+        "apikey",
+        "api-key",
+        "token",
+        "access_token",
+        "access-token",
+        "secret",
+        "client_secret",
+        "password",
+        "authorization",
+    ];
+    NAMES.iter().any(|item| name.eq_ignore_ascii_case(item))
+}
+
+fn query_carries_secret(url: &reqwest::Url) -> bool {
+    if url.query_pairs().any(|(name, _)| secret_param_name(&name)) {
+        return true;
+    }
+    url.fragment().is_some_and(|fragment| {
+        fragment.split('&').any(|pair| {
+            secret_param_name(pair.split_once('=').map(|(name, _)| name).unwrap_or(pair))
+        })
+    })
+}
+
+/// Normalize a base URL for storage. Query strings such as `api-version` stay;
+/// path joins happen later so a query is not glued onto `/chat/completions`.
 pub fn validate_base_url(raw: &str) -> Result<String, ProviderError> {
     let trimmed = raw.trim();
     if trimmed.is_empty() {
@@ -108,25 +138,32 @@ pub fn validate_base_url(raw: &str) -> Result<String, ProviderError> {
             "Enter a valid http(s) base URL",
         ));
     }
-    let parsed = reqwest::Url::parse(trimmed).map_err(|_| {
-        coded(
-            "backend_llm_url_invalid",
-            "Enter a valid http(s) base URL",
-        )
-    })?;
+    let mut parsed = reqwest::Url::parse(trimmed)
+        .map_err(|_| coded("backend_llm_url_invalid", "Enter a valid http(s) base URL"))?;
     if parsed.scheme() != "http" && parsed.scheme() != "https" {
         return Err(coded(
             "backend_llm_url_invalid",
             "Enter a valid http(s) base URL",
         ));
     }
-    if !parsed.username().is_empty() || parsed.password().is_some() {
+    if !parsed.username().is_empty() || parsed.password().is_some() || query_carries_secret(&parsed)
+    {
         return Err(coded(
             "backend_llm_url_secrets",
             "Do not put the API key in the URL",
         ));
     }
-    Ok(trimmed.trim_end_matches('/').to_string())
+    let path = parsed.path().trim_end_matches('/').to_string();
+    parsed.set_path(if path.is_empty() { "/" } else { &path });
+    parsed.set_fragment(None);
+    Ok(parsed.to_string())
+}
+
+fn url_with_path(base: &str, next_path: &str) -> Result<String, ProviderError> {
+    let mut url = reqwest::Url::parse(base)
+        .map_err(|_| coded("backend_llm_url_invalid", "Enter a valid http(s) base URL"))?;
+    url.set_path(next_path);
+    Ok(url.to_string())
 }
 
 pub fn normalize_model(raw: &str) -> String {
@@ -151,21 +188,28 @@ pub fn validate_model(raw: &str) -> Result<String, ProviderError> {
 
 pub fn chat_completions_url(base: &str) -> Result<String, ProviderError> {
     let base = validate_base_url(base)?;
-    if base.ends_with("/chat/completions") {
+    let url = reqwest::Url::parse(&base)
+        .map_err(|_| coded("backend_llm_url_invalid", "Enter a valid http(s) base URL"))?;
+    let path = url.path().trim_end_matches('/');
+    if path.ends_with("/chat/completions") {
         Ok(base)
     } else {
-        Ok(format!("{base}/chat/completions"))
+        let prefix = if path.is_empty() { "" } else { path };
+        url_with_path(&base, &format!("{prefix}/chat/completions"))
     }
 }
 
 pub fn models_url(base: &str) -> Result<String, ProviderError> {
     let base = validate_base_url(base)?;
-    if let Some(root) = base.strip_suffix("/chat/completions") {
-        let root = root.trim_end_matches('/');
-        Ok(format!("{root}/models"))
-    } else {
-        Ok(format!("{base}/models"))
-    }
+    let url = reqwest::Url::parse(&base)
+        .map_err(|_| coded("backend_llm_url_invalid", "Enter a valid http(s) base URL"))?;
+    let path = url.path().trim_end_matches('/');
+    let root = path
+        .strip_suffix("/chat/completions")
+        .unwrap_or(path)
+        .trim_end_matches('/');
+    let prefix = if root.is_empty() { "" } else { root };
+    url_with_path(&base, &format!("{prefix}/models"))
 }
 
 pub fn chat_body(model: &str, family: &str, user_content: &str) -> Value {
@@ -195,9 +239,7 @@ pub fn strip_fences(text: &str) -> &str {
 }
 
 pub fn assistant_text(body: &Value) -> Result<String, ProviderError> {
-    let message = body
-        .pointer("/choices/0/message")
-        .ok_or_else(empty_reply)?;
+    let message = body.pointer("/choices/0/message").ok_or_else(empty_reply)?;
     if let Some(refusal) = message
         .get("refusal")
         .and_then(Value::as_str)
@@ -587,7 +629,10 @@ mod tests {
         assert_eq!(messages[0]["role"], "system");
         assert_eq!(messages[1]["role"], "user");
         assert_eq!(messages[1]["content"], "a red lantern");
-        assert!(messages[0]["content"].as_str().unwrap().contains("FLUX.3 Image"));
+        assert!(messages[0]["content"]
+            .as_str()
+            .unwrap()
+            .contains("FLUX.3 Image"));
         assert!(body.get("previous_response_id").is_none());
         assert!(body.get("conversation").is_none());
         assert!(body.get("conversation_id").is_none());
@@ -609,11 +654,33 @@ mod tests {
             "https://api.openai.com/v1/models"
         );
         assert_eq!(
+            chat_completions_url("https://example.com/v1?api-version=2024-02-01").unwrap(),
+            "https://example.com/v1/chat/completions?api-version=2024-02-01"
+        );
+        assert_eq!(
+            models_url(
+                "https://example.com/openai/deployments/demo/chat/completions?api-version=2024-02-01"
+            )
+            .unwrap(),
+            "https://example.com/openai/deployments/demo/models?api-version=2024-02-01"
+        );
+        assert_eq!(
             validate_base_url("https://user:secret@host/v1")
                 .unwrap_err()
                 .code,
             "backend_llm_url_secrets"
         );
+        for raw in [
+            "https://example.com/v1?api_key=sk-test",
+            "https://example.com/v1?token=secret",
+            "https://example.com/v1#api_key=sk-test",
+        ] {
+            assert_eq!(
+                validate_base_url(raw).unwrap_err().code,
+                "backend_llm_url_secrets",
+                "{raw}"
+            );
+        }
         assert!(validate_base_url("ftp://example.com/v1").is_err());
     }
 
@@ -640,7 +707,11 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("lutri-llm-empty-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("llm.json");
-        std::fs::write(&path, br#"{"baseUrl":"https://example.test/v1","model":""}"#).unwrap();
+        std::fs::write(
+            &path,
+            br#"{"baseUrl":"https://example.test/v1","model":""}"#,
+        )
+        .unwrap();
         assert_eq!(read_settings_file(&path).unwrap().model, DEFAULT_MODEL);
         let _ = std::fs::remove_dir_all(dir);
     }
@@ -653,7 +724,10 @@ mod tests {
         assert_eq!(check_http_error(405).code, "backend_llm_check_no_models");
         assert_eq!(check_http_error(501).code, "backend_llm_check_no_models");
         assert_eq!(check_http_error(500).code, "backend_llm_check_failed");
-        assert_eq!(http_error(404, &Value::Null).code, "backend_llm_request_failed");
+        assert_eq!(
+            http_error(404, &Value::Null).code,
+            "backend_llm_request_failed"
+        );
     }
 
     #[test]

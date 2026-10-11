@@ -459,7 +459,7 @@
   "prompt_optimize_hint": "按当前模型改写提示词，不会提交生图。",
   "prompt_optimize_desktop": "提示词优化需要桌面应用",
   "prompt_optimize_empty": "模型返回了空提示词",
-  "prompt_optimize_stale": "任务已切换，请重新点「优化」",
+  "prompt_optimize_stale": "草稿已变化，请重新点「优化」",
   "prompt_optimize_open_settings": "打开设置",
   "settings_defaults": "新建默认值",
   "settings_appearance": "外观",

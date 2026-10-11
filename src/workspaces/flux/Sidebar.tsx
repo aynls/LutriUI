@@ -45,6 +45,8 @@ export interface SidebarProps {
   errors: string[];
   onGenerate: (count: number) => void;
   onSettings: () => void;
+  getVersion: () => string;
+  applyOptimizedPrompt: (expectedVersion: string, prompt: string) => void;
   generationTask?: GenerationTask | null;
   sentRequestId?: string;
   onShowTask?: () => void;

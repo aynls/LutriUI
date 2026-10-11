@@ -459,7 +459,7 @@
   "prompt_optimize_hint": "このモデル向けに今のプロンプトを書き直します。画像生成はしません。",
   "prompt_optimize_desktop": "プロンプト最適化はデスクトップアプリが必要です",
   "prompt_optimize_empty": "モデルが空のプロンプトを返しました",
-  "prompt_optimize_stale": "タスクが変わったので、もう一度「最適化」してください",
+  "prompt_optimize_stale": "下書きが変わったので、もう一度「最適化」してください",
   "prompt_optimize_open_settings": "設定を開く",
   "settings_defaults": "新規作成の既定値",
   "settings_appearance": "外観",

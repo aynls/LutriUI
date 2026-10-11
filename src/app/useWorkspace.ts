@@ -17,6 +17,7 @@ import {
   taskIntent,
   workspaceKey,
 } from "../lib/workspace";
+import { draftWithOptimizedPrompt } from "../lib/promptOptimize";
 import { normalizeDraftChange } from "./workspaceActions";
 import { families, fieldsFor, providers, modelById } from "../models/catalog";
 import { displayValue } from "../models/parameterLabels";
@@ -384,6 +385,20 @@ export function useWorkspace(
     lastEdit.current = Date.now();
   };
   const getVersion = () => `${instanceId.current}:${revision.current}`;
+  const commitRef = useRef(commit);
+  commitRef.current = commit;
+  const applyOptimizedPrompt = useCallback(
+    (expectedVersion: string, prompt: string) => {
+      const next = draftWithOptimizedPrompt(
+        current.current,
+        `${instanceId.current}:${revision.current}`,
+        expectedVersion,
+        prompt,
+      );
+      if (next !== current.current) commitRef.current(next, true);
+    },
+    [],
+  );
   return {
     prefs,
     setPrefs,
@@ -405,6 +420,7 @@ export function useWorkspace(
     beginGesture,
     endGesture,
     getVersion,
+    applyOptimizedPrompt,
     isGestureActive: () => gesture.current,
     canPersist: () => saveAllowed.current && !migrating.current,
   };
