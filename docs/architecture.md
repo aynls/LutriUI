@@ -7,12 +7,14 @@ LutriUI 将模型契约、工作区和供应商传输分开。新增模型时，
 | 位置                        | 职责                                                                                                |
 | --------------------------- | --------------------------------------------------------------------------------------------------- |
 | `shared/model-catalog.json` | 前后端共用的模型目录：家族、版本、供应商模型编号、参数规则、参考图上限、蒙版能力和文档来源          |
+| `shared/prompt-optimize.json` | 提示词优化的通用与按家族系统提示；未知家族回退通用模板 |
 | `src/models/`               | 参数投影、模型校验和请求编译；FLUX 协议位于 `flux/protocol.ts`                                      |
 | `src/workspaces/`           | 按家族注册的参数侧栏与工作区；通用控件和素材列表位于 `shared/`                                      |
 | `src/app/useWorkspace.ts`   | 任务草稿、模型切换、撤销、偏好和持久化                                                                  |
 | `src/app/generation.ts`     | 输入处理、生成快照、结果和历史材料组装                                                              |
 | `src/components/`           | 画布、历史、设置、结果展示等通用交互                                                                |
 | `src-tauri/src/models.rs`   | 读取同一模型目录，校验每个付费请求的路由、字段和输入约束                                            |
+| `src-tauri/src/llm.rs`      | OpenAI 兼容 Chat Completions 提示词优化：系统凭据、一次独立请求、不进入生图路径 |
 | `src-tauri/src/provider/`   | 各供应商的原生请求、鉴权、轮询和结果处理；凭据与共享传输分别位于 `credentials.rs`、`transport.rs` |
 
 `Draft` 保存规范模型编号 `modelId`，供应商原生编号放在路由目录中。`routeSettings` 按模型和供应商保存参数；切回时恢复原设置，同家族的新路由会投影共享参数，不同家族首次使用其新建默认值，参数变化显示具体调整摘要。发送时只使用当前路由白名单中的字段。切换到不支持蒙版的路由时，保留蒙版并阻止提交，供用户切回或移除。供应商不会自动切换。
@@ -70,6 +72,8 @@ FLUX 主图等比显示。移除区域保留虚线标记。来源标记的显示
 
 偏好设置将 API 连接、新建默认值、外观和存储分开。每个家族可保存默认模型、供应商及对应参数，仅在新建方案时使用。设置标题、关闭按钮与历史返回入口保持可见。动画只用于状态转换与任务活动提示，遵循减少动态效果的系统偏好。
 
+生成与编辑提示词旁的「优化」使用独立的 OpenAI 兼容 Chat Completions 端点（设置中填写 Base URL 与模型，模型空值默认为 `gpt-4.1-mini`；API Key 使用系统凭据 `app.lutriui.desktop` / `llm`，配置在 `app_data_dir/llm.json`）。每次点击只发送当前草稿的文本上下文（提示词、参考用途、编辑主图身份、路由参数等，不含图片像素），系统提示按 `shared/prompt-optimize.json` 的模型家族选取，未知家族回退通用模板。请求不含对话历史，也不调用 `generate` 或 MCP `task_submit`。连接检查走 `GET /models`，错误区分密钥被拒、端点无该路由、以及网络不可达；无 `/models` 不阻止随后的 Chat Completions。「优化」返回文本写回当前草稿提示词，用户仍可编辑。凭据不随图库根目录迁移。
+
 ## 生成与存储
 
 普通生成以候选网格为中央区域，按批次展示并逐张更新。编辑和 FLUX 区域构图使用画布，编辑页保留可折叠的近期生成面板。`regionsEnabled` 同时决定区域控件、生成页画布和请求编译；关闭区域构图会保留 `recipe.boxes`，实际请求与生成记录的区域字段为空。Runware 无参考图生成必须开启区域构图。生成张数属于草稿的 `repeatCount`，不作为供应商参数发送，导航和重启后保留。
@@ -118,6 +122,6 @@ Comfy 预估独立保存在 `shared/comfy-pricing.json`，记录核验日期与�
 4. 新增供应商时，添加凭据来源、状态与连接检查，在 `provider::dispatch` 中注册适配器，并将相应路由加入目录。
 5. 维护模型契约和关键行为测试，不用整页文案、图标路径或下拉选项快照验证界面。运行 `bun run test`、`bun run build` 和 `cargo test --manifest-path src-tauri/Cargo.toml`；桌面交互另行实测。
 
-自动验证覆盖请求字段投影、坐标与参考图身份、蒙版保护、路径重定位、HTML 安全隔离、SQLite 资产持久化、删除与重试一致性、图库迁移以及本地 HTTP 模拟。前端测试不依赖指定语言或整页交互模拟。`src-tauri/tests/live_nano_banana.rs` 与 `src-tauri/tests/live_creative_workflow.rs` 保留为显式付费验证，默认 `#[ignore]`，不会随普通测试执行。界面文案以 `scripts/emit-messages.ts` 为源，写入 `messages/` 后再执行 `bun run i18n:compile`。供应商名单和默认环境变量名从目录的 `providers` 读取，不再在凭据模块里另写一份。
+自动验证覆盖请求字段投影、坐标与参考图身份、蒙版保护、路径重定位、HTML 安全隔离、SQLite 资产持久化、删除与重试一致性、图库迁移、提示词优化的家族模板与一次独立 Chat Completions 请求，以及本地 HTTP 模拟。前端测试不依赖指定语言或整页交互模拟。`src-tauri/tests/live_nano_banana.rs` 与 `src-tauri/tests/live_creative_workflow.rs` 保留为显式付费验证，默认 `#[ignore]`，不会随普通测试执行。界面文案以 `scripts/emit-messages.ts` 为源，写入 `messages/` 后再执行 `bun run i18n:compile`。供应商名单和默认环境变量名从目录的 `providers` 读取，不再在凭据模块里另写一份。
 
 工作台采用「参数栏 → 参考素材栏 → 画布／生成结果」布局。素材栏独立于各模型的画布与结果视图，切换视图时保留素材操作位置；左侧两栏分别滚动并保存宽度。素材栏右边界支持拖拽和方向键调节，窄窗口优先为右侧工作区保留 320px；不足时允许横向滚动。

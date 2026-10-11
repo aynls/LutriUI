@@ -199,7 +199,8 @@ h3 {
   gap: 10px;
   margin-bottom: 8px;
 }
-.section-heading h2 {
+.section-heading h2,
+.section-heading h3 {
   margin: 0;
 }
 .field-grid {
@@ -2087,6 +2088,30 @@ button {
 .modal:has(> .modal-body > .source-region-editor) > .modal-body {
   flex: 1;
   overflow: hidden;
+}
+.prompt-editor > .section-heading {
+  margin-bottom: 8px;
+}
+.prompt-editor > .section-heading h2 {
+  margin: 0;
+}
+.prompt-optimize {
+  font-size: 12px;
+  padding: 3px 8px;
+}
+.prompt-optimize-error {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 8px;
+  margin-top: 6px;
+}
+.prompt-optimize-error p {
+  margin: 0;
+}
+.prompt-optimize-error button {
+  font-size: 12px;
+  padding: 3px 8px;
 }
 .prompt-limit {
   display: flex;

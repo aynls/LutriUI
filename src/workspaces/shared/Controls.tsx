@@ -25,6 +25,8 @@ import { estimateCost } from "../../lib/params";
 import { estimateComfyCredits, formatCredits } from "../../models/pricing";
 import { sentSize, taskIntent } from "../../lib/workspace";
 import { useEffect, useId, useRef, useState } from "react";
+import { AppError, isDesktop, promptOptimize } from "../../lib/api";
+import { packOptimizeContext } from "../../lib/promptOptimize";
 import { gptSize } from "../../models/gpt";
 import type {
   Draft,
@@ -519,13 +521,48 @@ export function FrameSizeFields(
 export function PromptEditor({
   draft: d,
   onChange,
+  onSettings,
 }: {
   draft: Draft;
   onChange: (d: Draft) => void;
+  onSettings?: () => void;
 }) {
   const ref = useRef<HTMLTextAreaElement>(null);
+  const draftRef = useRef(d);
+  draftRef.current = d;
   const feedbackId = useId();
   const { length, min, max, error } = promptLength(d);
+  const [optimizeBusy, setOptimizeBusy] = useState(false);
+  const [optimizeError, setOptimizeError] = useState("");
+  const [optimizeNeedsSettings, setOptimizeNeedsSettings] = useState(false);
+  const optimize = async () => {
+    const snapshot = draftRef.current;
+    setOptimizeBusy(true);
+    setOptimizeError("");
+    setOptimizeNeedsSettings(false);
+    try {
+      if (!isDesktop()) throw new Error(m.prompt_optimize_desktop());
+      const text = (
+        await promptOptimize(snapshot.family, packOptimizeContext(snapshot))
+      ).trim();
+      if (!text) throw new Error(m.prompt_optimize_empty());
+      const current = draftRef.current;
+      if (current.intent !== snapshot.intent)
+        throw new Error(m.prompt_optimize_stale());
+      onChange({ ...current, prompt: text });
+    } catch (e) {
+      setOptimizeError(String(e));
+      const code = e instanceof AppError ? e.code : "";
+      setOptimizeNeedsSettings(
+        code === "backend_llm_key_missing" ||
+          code === "backend_llm_url_missing" ||
+          code === "backend_llm_model_missing" ||
+          code === "backend_llm_unauthorized",
+      );
+    } finally {
+      setOptimizeBusy(false);
+    }
+  };
   const insert = (tag: string) => {
     const start = ref.current?.selectionStart ?? d.prompt.length,
       end = ref.current?.selectionEnd ?? start;
@@ -545,17 +582,29 @@ export function PromptEditor({
   };
   return (
     <section className="prompt-editor">
-      <h2>
-        {d.family === "gpt" && d.refs.length
-          ? m.handoff_instruction()
-          : m.prompt()}
-      </h2>
+      <div className="section-heading">
+        <h2>
+          {d.family === "gpt" && d.refs.length
+            ? m.handoff_instruction()
+            : m.prompt()}
+        </h2>
+        <button
+          type="button"
+          className="prompt-optimize"
+          disabled={optimizeBusy}
+          title={m.prompt_optimize_hint()}
+          onClick={() => void optimize()}
+        >
+          {optimizeBusy ? m.prompt_optimize_busy() : m.prompt_optimize()}
+        </button>
+      </div>
       <textarea
         ref={ref}
         aria-label={m.prompt()}
         rows={d.family === "qwen" ? 4 : 5}
         aria-describedby={feedbackId}
         aria-invalid={!!error}
+        disabled={optimizeBusy}
         placeholder={
           d.family === "qwen"
             ? m.prompt_placeholder_text()
@@ -576,12 +625,23 @@ export function PromptEditor({
           {length.toLocaleString()} / {max.toLocaleString()}
         </span>
       </div>
+      {optimizeError && (
+        <div className="prompt-optimize-error" role="alert">
+          <p className="error-text">{optimizeError}</p>
+          {optimizeNeedsSettings && onSettings && (
+            <button type="button" onClick={onSettings}>
+              {m.prompt_optimize_open_settings()}
+            </button>
+          )}
+        </div>
+      )}
       {(d.refs.length > 0 || d.boxes.length > 0) && (
         <div className="tags">
           {d.refs.map((r, i) => (
             <button
               key={r.uid}
               title={r.name}
+              disabled={optimizeBusy}
               onMouseDown={(e) => e.preventDefault()}
               onClick={() => insert(`<ref_image_${i}>`)}
             >
@@ -591,6 +651,7 @@ export function PromptEditor({
           {d.boxes.map((b) => (
             <button
               key={b.uid}
+              disabled={optimizeBusy}
               onMouseDown={(e) => e.preventDefault()}
               onClick={() => insert(`<${b.id}>`)}
             >
