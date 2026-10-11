@@ -3,6 +3,7 @@ import { catalog } from "../models/catalog";
 import { newDraft } from "./workspace";
 import type { Draft } from "./types";
 import {
+  DEFAULT_LLM_MODEL,
   familyTemplate,
   genericTemplate,
   optimizeChatMessages,
@@ -49,6 +50,10 @@ function draft(over: Partial<Draft> = {}): Draft {
     ...over,
   };
 }
+
+test("empty LLM model id defaults to gpt-4.1-mini", () => {
+  expect(DEFAULT_LLM_MODEL).toBe("gpt-4.1-mini");
+});
 
 test("every catalog family has a prompt-optimize overlay", () => {
   for (const family of catalog.families) {

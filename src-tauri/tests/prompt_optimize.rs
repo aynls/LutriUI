@@ -193,3 +193,59 @@ async fn connection_check_hits_models_not_image_generate() {
     assert!(!requests[0].0.contains("generate"));
     assert!(!requests[0].0.contains("images"));
 }
+
+#[tokio::test]
+async fn connection_check_distinguishes_auth_and_missing_models_route() {
+    let (url, handle) = server(vec![(401, json!({"error":{"message":"bad key"}}))]);
+    let err = check_with(&settings(&url), "bad").await.unwrap_err();
+    assert_eq!(err.code, "backend_llm_unauthorized");
+    handle.join().unwrap();
+
+    let (url, handle) = server(vec![(404, json!({"error":{"message":"nope"}}))]);
+    let err = check_with(&settings(&url), "ok").await.unwrap_err();
+    assert_eq!(err.code, "backend_llm_check_no_models");
+    handle.join().unwrap();
+
+    let (url, handle) = server(vec![(500, json!({}))]);
+    let err = check_with(&settings(&url), "ok").await.unwrap_err();
+    assert_eq!(err.code, "backend_llm_check_failed");
+    handle.join().unwrap();
+}
+
+#[tokio::test]
+async fn connection_check_network_error_is_not_auth() {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = listener.local_addr().unwrap();
+    drop(listener);
+    let err = check_with(
+        &LlmSettings {
+            base_url: format!("http://{addr}/v1"),
+            model: "demo".into(),
+        },
+        "k",
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(err.code, "backend_llm_check_network");
+}
+
+#[tokio::test]
+async fn empty_model_is_sent_as_gpt_41_mini() {
+    let (url, handle) = server(vec![(
+        200,
+        json!({"choices":[{"message":{"content":"ok"}}]}),
+    )]);
+    optimize_with(
+        &LlmSettings {
+            base_url: format!("{url}/v1"),
+            model: String::new(),
+        },
+        "k",
+        "flux",
+        "context",
+    )
+    .await
+    .unwrap();
+    let requests = handle.join().unwrap();
+    assert_eq!(requests[0].1["model"], "gpt-4.1-mini");
+}

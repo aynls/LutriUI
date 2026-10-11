@@ -4,6 +4,8 @@ import { promptLength } from "../models";
 import { regionsEnabled } from "../models/flux/layout";
 import type { Draft, FamilyId } from "./types";
 
+export const DEFAULT_LLM_MODEL = "gpt-4.1-mini";
+
 const PURPOSE: Record<string, string> = {
   reference: "general reference",
   style: "visual style, colors and lighting",

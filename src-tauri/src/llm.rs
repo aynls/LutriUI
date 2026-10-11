@@ -12,14 +12,28 @@ const KEYRING_USER: &str = "llm";
 const MAX_USER_CHARS: usize = 100_000;
 const MAX_URL_CHARS: usize = 2048;
 const MAX_MODEL_CHARS: usize = 256;
+pub const DEFAULT_MODEL: &str = "gpt-4.1-mini";
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+fn default_model() -> String {
+    DEFAULT_MODEL.into()
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct LlmSettings {
     #[serde(default)]
     pub base_url: String,
-    #[serde(default)]
+    #[serde(default = "default_model")]
     pub model: String,
+}
+
+impl Default for LlmSettings {
+    fn default() -> Self {
+        Self {
+            base_url: String::new(),
+            model: default_model(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -115,21 +129,24 @@ pub fn validate_base_url(raw: &str) -> Result<String, ProviderError> {
     Ok(trimmed.trim_end_matches('/').to_string())
 }
 
-pub fn validate_model(raw: &str) -> Result<String, ProviderError> {
+pub fn normalize_model(raw: &str) -> String {
     let trimmed = raw.trim();
     if trimmed.is_empty() {
+        DEFAULT_MODEL.into()
+    } else {
+        trimmed.into()
+    }
+}
+
+pub fn validate_model(raw: &str) -> Result<String, ProviderError> {
+    let model = normalize_model(raw);
+    if model.len() > MAX_MODEL_CHARS || model.contains(['\r', '\n', '\0']) {
         return Err(coded(
             "backend_llm_model_missing",
             "Enter the Chat Completions model id",
         ));
     }
-    if trimmed.len() > MAX_MODEL_CHARS || trimmed.contains(['\r', '\n', '\0']) {
-        return Err(coded(
-            "backend_llm_model_missing",
-            "Enter the Chat Completions model id",
-        ));
-    }
-    Ok(trimmed.to_string())
+    Ok(model)
 }
 
 pub fn chat_completions_url(base: &str) -> Result<String, ProviderError> {
@@ -215,13 +232,17 @@ fn empty_reply() -> ProviderError {
     )
 }
 
+fn unauthorized(status: u16) -> ProviderError {
+    coded(
+        "backend_llm_unauthorized",
+        "The API key is missing, invalid, or was rejected",
+    )
+    .with_status(status)
+}
+
 fn http_error(status: u16, body: &Value) -> ProviderError {
     if status == 401 || status == 403 {
-        return coded(
-            "backend_llm_unauthorized",
-            "The API key is missing, invalid, or was rejected",
-        )
-        .with_status(status);
+        return unauthorized(status);
     }
     let upstream = body
         .pointer("/error/message")
@@ -243,6 +264,23 @@ fn http_error(status: u16, body: &Value) -> ProviderError {
     }
 }
 
+fn check_http_error(status: u16) -> ProviderError {
+    match status {
+        401 | 403 => unauthorized(status),
+        404 | 405 | 501 => coded(
+            "backend_llm_check_no_models",
+            "This endpoint does not provide GET /models, so the key was not confirmed that way. Optimize still uses Chat Completions.",
+        )
+        .with_status(status),
+        _ => coded(
+            "backend_llm_check_failed",
+            format!("Connection check failed (HTTP {status}). This did not run Optimize or generate an image."),
+        )
+        .with_param("status", status)
+        .with_status(status),
+    }
+}
+
 pub fn read_settings_file(path: &Path) -> Result<LlmSettings, ProviderError> {
     match std::fs::read(path) {
         Ok(bytes) => serde_json::from_slice(&bytes).map_err(|_| {
@@ -257,6 +295,10 @@ pub fn read_settings_file(path: &Path) -> Result<LlmSettings, ProviderError> {
             "Couldn't read the prompt-optimize settings",
         )),
     }
+    .map(|mut settings| {
+        settings.model = normalize_model(&settings.model);
+        settings
+    })
 }
 
 pub fn write_settings_file(path: &Path, settings: &LlmSettings) -> Result<(), ProviderError> {
@@ -384,12 +426,10 @@ pub fn remove_key() -> Result<(), ProviderError> {
 pub fn status() -> Result<LlmStatus, ProviderError> {
     let settings = settings()?;
     let has_key = stored_key().is_some();
-    let configured = has_key
-        && !settings.base_url.trim().is_empty()
-        && !settings.model.trim().is_empty();
+    let configured = has_key && !settings.base_url.trim().is_empty();
     Ok(LlmStatus {
         base_url: settings.base_url,
-        model: settings.model,
+        model: normalize_model(&settings.model),
         has_key,
         configured,
     })
@@ -397,18 +437,13 @@ pub fn status() -> Result<LlmStatus, ProviderError> {
 
 pub fn prepare_settings(base_url: String, model: String) -> Result<LlmSettings, ProviderError> {
     let base_url = base_url.trim();
-    let model = model.trim();
     Ok(LlmSettings {
         base_url: if base_url.is_empty() {
             String::new()
         } else {
             validate_base_url(base_url)?
         },
-        model: if model.is_empty() {
-            String::new()
-        } else {
-            validate_model(model)?
-        },
+        model: validate_model(&model)?,
     })
 }
 
@@ -481,14 +516,13 @@ pub async fn check_with(settings: &LlmSettings, key: &str) -> Result<(), Provide
         .await
         .map_err(|_| {
             coded(
-                "backend_llm_network_failed",
-                "Prompt optimize network request failed",
+                "backend_llm_check_network",
+                "Couldn't reach the endpoint. Check the base URL and network.",
             )
         })?;
     let status = response.status().as_u16();
     if !(200..300).contains(&status) {
-        let body = response.json().await.unwrap_or(Value::Null);
-        return Err(http_error(status, &body));
+        return Err(check_http_error(status));
     }
     Ok(())
 }
@@ -590,6 +624,36 @@ mod tests {
         let parts = json!({"choices":[{"message":{"content":[{"type":"text","text":"hello "},{"text":"world"}]}}]});
         assert_eq!(assistant_text(&parts).unwrap(), "hello world");
         assert!(assistant_text(&json!({"choices":[{"message":{"content":""}}]})).is_err());
+    }
+
+    #[test]
+    fn empty_model_defaults_to_gpt_41_mini() {
+        assert_eq!(normalize_model(""), DEFAULT_MODEL);
+        assert_eq!(normalize_model("  "), DEFAULT_MODEL);
+        assert_eq!(validate_model("").unwrap(), DEFAULT_MODEL);
+        assert_eq!(
+            prepare_settings(String::new(), String::new())
+                .unwrap()
+                .model,
+            DEFAULT_MODEL
+        );
+        let dir = std::env::temp_dir().join(format!("lutri-llm-empty-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("llm.json");
+        std::fs::write(&path, br#"{"baseUrl":"https://example.test/v1","model":""}"#).unwrap();
+        assert_eq!(read_settings_file(&path).unwrap().model, DEFAULT_MODEL);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn check_errors_distinguish_auth_missing_route_and_other_http() {
+        assert_eq!(check_http_error(401).code, "backend_llm_unauthorized");
+        assert_eq!(check_http_error(403).code, "backend_llm_unauthorized");
+        assert_eq!(check_http_error(404).code, "backend_llm_check_no_models");
+        assert_eq!(check_http_error(405).code, "backend_llm_check_no_models");
+        assert_eq!(check_http_error(501).code, "backend_llm_check_no_models");
+        assert_eq!(check_http_error(500).code, "backend_llm_check_failed");
+        assert_eq!(http_error(404, &Value::Null).code, "backend_llm_request_failed");
     }
 
     #[test]

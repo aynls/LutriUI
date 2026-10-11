@@ -72,7 +72,7 @@ FLUX 主图等比显示。移除区域保留虚线标记。来源标记的显示
 
 偏好设置将 API 连接、新建默认值、外观和存储分开。每个家族可保存默认模型、供应商及对应参数，仅在新建方案时使用。设置标题、关闭按钮与历史返回入口保持可见。动画只用于状态转换与任务活动提示，遵循减少动态效果的系统偏好。
 
-生成与编辑提示词旁的「优化」使用独立的 OpenAI 兼容 Chat Completions 端点（设置中填写 Base URL 与模型；API Key 使用系统凭据 `app.lutriui.desktop` / `llm`，配置在 `app_data_dir/llm.json`）。每次点击只发送当前草稿的文本上下文（提示词、参考用途、编辑主图身份、路由参数等），系统提示按 `shared/prompt-optimize.json` 的模型家族选取，未知家族回退通用模板。请求不含对话历史、不含图片像素，也不调用 `generate` 或 MCP `task_submit`。返回文本写回当前草稿提示词，用户仍可编辑。凭据不随图库根目录迁移。
+生成与编辑提示词旁的「优化」使用独立的 OpenAI 兼容 Chat Completions 端点（设置中填写 Base URL 与模型，模型空值默认为 `gpt-4.1-mini`；API Key 使用系统凭据 `app.lutriui.desktop` / `llm`，配置在 `app_data_dir/llm.json`）。每次点击只发送当前草稿的文本上下文（提示词、参考用途、编辑主图身份、路由参数等，不含图片像素），系统提示按 `shared/prompt-optimize.json` 的模型家族选取，未知家族回退通用模板。请求不含对话历史，也不调用 `generate` 或 MCP `task_submit`。连接检查走 `GET /models`，错误区分密钥被拒、端点无该路由、以及网络不可达；无 `/models` 不阻止随后的 Chat Completions。「优化」返回文本写回当前草稿提示词，用户仍可编辑。凭据不随图库根目录迁移。
 
 ## 生成与存储
 

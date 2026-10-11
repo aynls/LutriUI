@@ -42,6 +42,7 @@ import {
 import { ParameterFields, FrameSizeFields } from "../workspaces/shared/Controls";
 import { m } from "../i18n";
 import { modelLabel, providerLabel } from "../labels";
+import { DEFAULT_LLM_MODEL } from "../lib/promptOptimize";
 
 export default function Settings({
   prefs,
@@ -589,21 +590,23 @@ function LlmSettingsCard() {
     const next = await llmStatus();
     setStatus(next);
     setBaseUrl(next.baseUrl);
-    setModel(next.model);
+    setModel(next.model.trim() || DEFAULT_LLM_MODEL);
   };
   useEffect(() => {
     load().catch((e) => setError(String(e)));
   }, []);
+  const effectiveModel = model.trim() || DEFAULT_LLM_MODEL;
   const changed =
     !!status &&
-    (baseUrl.trim() !== status.baseUrl || model.trim() !== status.model);
+    (baseUrl.trim() !== status.baseUrl ||
+      effectiveModel !== (status.model.trim() || DEFAULT_LLM_MODEL));
   const run = async (action: "save" | "saveKey" | "remove" | "check") => {
     setBusy(true);
     setMessage("");
     setError("");
     try {
       if (action === "save" || action === "saveKey") {
-        await llmConfigure(baseUrl, model);
+        await llmConfigure(baseUrl, effectiveModel);
       }
       if (action === "saveKey") {
         await llmCredentialSave(key);
@@ -711,6 +714,7 @@ function LlmSettingsCard() {
           {m.credential_check()}
         </button>
       </div>
+      <p className="help">{m.settings_llm_check_help()}</p>
       {error && (
         <p className="error-text" role="alert">
           {error}
