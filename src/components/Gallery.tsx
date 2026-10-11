@@ -8,12 +8,14 @@ import {
   ArrowLeft,
   Eye,
   Copy,
-  Star,
+  FolderSimple,
+  PencilSimple,
   Export,
   FunnelSimple,
 } from "@phosphor-icons/react";
 import { open, save } from "@tauri-apps/plugin-dialog";
 import type {
+  Board,
   GalleryAvailabilityFilter,
   GalleryBatchResult,
   GalleryItem,
@@ -81,7 +83,12 @@ export default function Gallery(p: {
   const [source, setSource] = useState<GallerySourceFilter>("all");
   const [model, setModel] = useState<string | null>(null);
   const [tag, setTag] = useState<string | null>(null);
-  const [favoriteOnly, setFavoriteOnly] = useState(false);
+  const [boardId, setBoardId] = useState<string | null>(null);
+  const [boards, setBoards] = useState<Board[]>([]);
+  const [creatingBoard, setCreatingBoard] = useState(false);
+  const [boardName, setBoardName] = useState("");
+  const [renaming, setRenaming] = useState(false);
+  const [deleteBoard, setDeleteBoard] = useState(false);
   const [availability, setAvailability] =
     useState<GalleryAvailabilityFilter>("all");
   const [fromDay, setFromDay] = useState("");
@@ -109,7 +116,8 @@ export default function Gallery(p: {
       tag,
       createdFrom: localDayStart(fromDay),
       createdUntil: localDayEnd(toDay),
-      favorite: favoriteOnly ? true : null,
+      favorite: null,
+      boardId,
       availability,
       sort,
       offset: 0,
@@ -120,7 +128,7 @@ export default function Gallery(p: {
       source,
       model,
       tag,
-      favoriteOnly,
+      boardId,
       availability,
       fromDay,
       toDay,
@@ -133,7 +141,7 @@ export default function Gallery(p: {
     source !== "all" ||
     model != null ||
     tag != null ||
-    favoriteOnly ||
+    boardId != null ||
     availability !== "all" ||
     !!fromDay ||
     !!toDay;
@@ -193,11 +201,6 @@ export default function Gallery(p: {
     if (result.failed.length)
       throw new Error(describeBatch(result, ""));
   };
-  const batchPatch = async (patch: GalleryPatch) => {
-    if (!selection.length) return;
-    await api.galleryPatch(selection, patch);
-    await p.onRefresh();
-  };
   const batchTags = async (add: boolean) => {
     const tags = parseTags(tagDraft);
     if (!tags.length || !selection.length) return;
@@ -219,6 +222,54 @@ export default function Gallery(p: {
     );
     setNotice(batchSummary(result));
     if (result.failed.length) throw new Error(describeBatch(result, ""));
+  };
+  const reloadBoards = async () => {
+    setBoards(await api.boardList());
+  };
+  useEffect(() => {
+    void reloadBoards().catch((e) => setError(String(e)));
+  }, [p.revision]);
+  const activeBoard = boards.find((board) => board.id === boardId) ?? null;
+  const finishBoard = async (action: () => Promise<unknown>) => {
+    await action();
+    await reloadBoards();
+    await p.onRefresh();
+  };
+  const createBoard = async () => {
+    const name = boardName.trim();
+    if (!name) return;
+    const board = await api.boardCreate(name);
+    setBoardName("");
+    setCreatingBoard(false);
+    setBoardId(board.id);
+    await reloadBoards();
+  };
+  const renameBoard = async () => {
+    if (!activeBoard) return;
+    const name = boardName.trim();
+    if (!name || name === activeBoard.name) {
+      setRenaming(false);
+      return;
+    }
+    await api.boardRename(activeBoard.id, name);
+    setRenaming(false);
+    await reloadBoards();
+  };
+  const removeBoard = async () => {
+    if (!activeBoard) return;
+    await api.boardDelete(activeBoard.id);
+    setDeleteBoard(false);
+    setBoardId(null);
+    await reloadBoards();
+    await p.onRefresh();
+  };
+  const toggleBoard = async (item: GalleryItem, target: string) => {
+    const on = item.boardIds.includes(target);
+    await (on
+      ? api.boardRemove(target, [item.id])
+      : api.boardAdd(target, [item.id]));
+    await reloadBoards();
+    await p.onRefresh();
   };
   const selectedItems = data.items.filter((item) =>
     selection.includes(item.id),
@@ -374,16 +425,6 @@ export default function Gallery(p: {
               <option value="pending">{m.gallery_pending()}</option>
             </select>
           </label>
-          <label className="check">
-            <input
-              type="checkbox"
-              checked={favoriteOnly}
-              onChange={(e) =>
-                filterChange(() => setFavoriteOnly(e.target.checked))
-              }
-            />
-            {m.gallery_favorites()}
-          </label>
           <label>
             <span className="muted">{m.gallery_from()}</span>
             <input
@@ -404,6 +445,103 @@ export default function Gallery(p: {
           </label>
         </div>
       )}
+      <div className="gallery-boards" aria-label={m.board_bar()}>
+        <button
+          aria-pressed={boardId == null}
+          className={boardId == null ? "active" : ""}
+          onClick={() => filterChange(() => setBoardId(null))}
+        >
+          {m.board_all()}
+        </button>
+        {boards.map((board) => (
+          <button
+            key={board.id}
+            aria-pressed={boardId === board.id}
+            className={boardId === board.id ? "active" : ""}
+            onClick={() => filterChange(() => setBoardId(board.id))}
+          >
+            {board.name}
+            <span className="muted">{board.assetCount}</span>
+          </button>
+        ))}
+        {creatingBoard ? (
+          <span className="gallery-board-edit">
+            <input
+              autoFocus
+              aria-label={m.board_name()}
+              value={boardName}
+              onChange={(e) => setBoardName(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") void run(createBoard);
+                if (e.key === "Escape") {
+                  setCreatingBoard(false);
+                  setBoardName("");
+                }
+              }}
+            />
+            <button
+              className="primary"
+              disabled={locked || !boardName.trim()}
+              onClick={() => void run(createBoard)}
+            >
+              {m.board_create()}
+            </button>
+          </span>
+        ) : (
+          <button
+            disabled={locked}
+            onClick={() => {
+              setCreatingBoard(true);
+              setRenaming(false);
+              setBoardName("");
+            }}
+          >
+            <Plus size={14} />
+            {m.board_new()}
+          </button>
+        )}
+        {activeBoard && !creatingBoard && (
+          renaming ? (
+            <span className="gallery-board-edit">
+              <input
+                autoFocus
+                aria-label={m.board_rename()}
+                value={boardName}
+                onChange={(e) => setBoardName(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") void run(renameBoard);
+                  if (e.key === "Escape") setRenaming(false);
+                }}
+              />
+              <button
+                disabled={locked || !boardName.trim()}
+                onClick={() => void run(renameBoard)}
+              >
+                {m.board_save_name()}
+              </button>
+            </span>
+          ) : (
+            <>
+              <button
+                disabled={locked}
+                onClick={() => {
+                  setRenaming(true);
+                  setBoardName(activeBoard.name);
+                }}
+              >
+                {m.board_rename()}
+              </button>
+              <button
+                className="danger"
+                disabled={locked}
+                onClick={() => setDeleteBoard(true)}
+              >
+                {m.board_delete()}
+              </button>
+            </>
+          )
+        )}
+      </div>
       {p.picker && (
         <p className="gallery-hint">
           {m.gallery_room({
@@ -489,13 +627,17 @@ export default function Gallery(p: {
                             ),
                       )
                     }
-                    onFavorite={() =>
-                      void run(async () => {
-                        await api.galleryPatch([item.id], {
-                          favorite: !item.favorite,
-                        });
-                        await p.onRefresh();
-                      })
+                    boards={boards}
+                    activeBoardId={boardId}
+                    onToggleBoard={(target) =>
+                      void run(() => toggleBoard(item, target))
+                    }
+                    onEdit={
+                      p.picker || item.pendingDelete
+                        ? undefined
+                        : () => void run(async () => {
+                            await p.onEdit(item);
+                          })
                     }
                     onClick={() => {
                       if (item.pendingDelete) {
@@ -566,18 +708,77 @@ export default function Gallery(p: {
           </button>
           {!p.picker && (
             <>
-              <button
-                disabled={locked || !selection.length || hasPending}
-                onClick={() => void run(() => batchPatch({ favorite: true }))}
-              >
-                {m.gallery_favorite()}
-              </button>
-              <button
-                disabled={locked || !selection.length || hasPending}
-                onClick={() => void run(() => batchPatch({ favorite: false }))}
-              >
-                {m.gallery_unfavorite()}
-              </button>
+              <label className="gallery-board-select">
+                <span className="muted">{m.board_add_to()}</span>
+                <select
+                  aria-label={m.board_add()}
+                  disabled={locked || !selection.length || hasPending || !boards.length}
+                  value=""
+                  onChange={(e) => {
+                    const target = e.target.value;
+                    e.target.value = "";
+                    if (!target) return;
+                    void run(() =>
+                      finishBoard(() => api.boardAdd(target, selection)),
+                    );
+                  }}
+                >
+                  <option value="">{m.board_add()}</option>
+                  {boards.map((board) => (
+                    <option key={board.id} value={board.id}>
+                      {board.name}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              {activeBoard && (
+                <>
+                  <button
+                    disabled={locked || !selection.length || hasPending}
+                    onClick={() =>
+                      void run(() =>
+                        finishBoard(() =>
+                          api.boardRemove(activeBoard.id, selection),
+                        ),
+                      )
+                    }
+                  >
+                    {m.board_leave()}
+                  </button>
+                  <label className="gallery-board-select">
+                    <span className="muted">{m.board_move()}</span>
+                    <select
+                      aria-label={m.board_move()}
+                      disabled={
+                        locked ||
+                        !selection.length ||
+                        hasPending ||
+                        boards.length < 2
+                      }
+                      value=""
+                      onChange={(e) => {
+                        const target = e.target.value;
+                        e.target.value = "";
+                        if (!target) return;
+                        void run(() =>
+                          finishBoard(() =>
+                            api.boardMove(activeBoard.id, target, selection),
+                          ),
+                        );
+                      }}
+                    >
+                      <option value="">{m.board_move()}</option>
+                      {boards
+                        .filter((board) => board.id !== activeBoard.id)
+                        .map((board) => (
+                          <option key={board.id} value={board.id}>
+                            {board.name}
+                          </option>
+                        ))}
+                    </select>
+                  </label>
+                </>
+              )}
               <input
                 className="gallery-tag-input"
                 aria-label={m.gallery_tag_edit()}
@@ -633,6 +834,8 @@ export default function Gallery(p: {
           pickerFull={selection.length >= limit}
           alreadyUsed={used.has(previewId)}
           saveDirectory={p.saveDirectory}
+          boards={boards}
+          onToggleBoard={(item, target) => toggleBoard(item, target)}
           onClose={() => {
             if (!busy) {
               setPreviewId(null);
@@ -654,6 +857,33 @@ export default function Gallery(p: {
           setError={setError}
           run={run}
         />
+      )}
+      {deleteBoard && activeBoard && (
+        <Modal
+          title={m.board_delete_title()}
+          onClose={() => {
+            if (!busy) setDeleteBoard(false);
+          }}
+        >
+          <p>{m.board_delete_body()}</p>
+          {error && (
+            <p className="error-text" role="alert">
+              {error}
+            </p>
+          )}
+          <div className="row">
+            <button disabled={busy} onClick={() => setDeleteBoard(false)}>
+              {m.action_cancel()}
+            </button>
+            <button
+              className="danger"
+              disabled={busy}
+              onClick={() => void run(removeBoard)}
+            >
+              {m.board_delete()}
+            </button>
+          </div>
+        </Modal>
       )}
       {!!deleteIds.length && (
         <Modal
@@ -703,14 +933,18 @@ function GalleryTile(p: {
   selecting: boolean;
   disabled: boolean;
   thumbBroken: boolean;
+  boards: Board[];
+  activeBoardId: string | null;
+  onToggleBoard: (boardId: string) => void;
+  onEdit?: () => void;
   onThumbError: () => void;
-  onFavorite: () => void;
   onClick: () => void;
   onPeek?: () => void;
 }) {
   const { item } = p;
   return (
     <div className="gallery-cell">
+      <div className="gallery-tile-wrap">
       <button
         className={"gallery-tile" + (p.checked ? " selected" : "")}
         aria-label={
@@ -759,21 +993,33 @@ function GalleryTile(p: {
           )
         )}
       </button>
-      <span className="gallery-name" title={item.name}>
-        {item.name}
-      </span>
-      <button
-        className={"gallery-fav" + (item.favorite ? " active" : "")}
-        aria-label={m.gallery_favorite_named({ name: item.name })}
-        aria-pressed={item.favorite}
-        disabled={p.disabled || item.pendingDelete}
-        onClick={(e) => {
-          e.stopPropagation();
-          p.onFavorite();
-        }}
-      >
-        <Star size={14} weight={item.favorite ? "fill" : "regular"} />
-      </button>
+      {p.boards.length > 0 && (
+        <BoardMark
+          item={item}
+          boards={p.boards}
+          activeBoardId={p.activeBoardId}
+          disabled={p.disabled || item.pendingDelete}
+          onToggle={p.onToggleBoard}
+        />
+      )}
+      {p.onEdit && (
+        <button
+          className="gallery-edit"
+          aria-label={m.grid_edit_named()}
+          disabled={
+            p.disabled ||
+            item.pendingDelete ||
+            item.availability === "missing"
+          }
+          onClick={(e) => {
+            e.stopPropagation();
+            p.onEdit?.();
+          }}
+        >
+          <PencilSimple size={14} />
+          {m.grid_edit()}
+        </button>
+      )}
       {p.onPeek && (
         <button
           className="gallery-peek"
@@ -783,7 +1029,69 @@ function GalleryTile(p: {
           <Eye size={16} />
         </button>
       )}
+      </div>
+      <span className="gallery-name" title={item.name}>
+        {item.name}
+      </span>
     </div>
+  );
+}
+
+function BoardMark(p: {
+  item: GalleryItem;
+  boards: Board[];
+  activeBoardId: string | null;
+  disabled: boolean;
+  onToggle: (boardId: string) => void;
+}) {
+  const onActive = p.activeBoardId
+    ? p.item.boardIds.includes(p.activeBoardId)
+    : p.item.boardIds.length > 0;
+  if (p.activeBoardId) {
+    return (
+      <button
+        className={"gallery-fav" + (onActive ? " active" : "")}
+        aria-label={
+          onActive
+            ? m.board_on_named({ name: p.item.name })
+            : m.board_add_named({ name: p.item.name })
+        }
+        aria-pressed={onActive}
+        disabled={p.disabled}
+        onClick={(e) => {
+          e.stopPropagation();
+          p.onToggle(p.activeBoardId!);
+        }}
+      >
+        <FolderSimple size={14} weight={onActive ? "fill" : "regular"} />
+      </button>
+    );
+  }
+  return (
+    <details className={"gallery-board-menu" + (onActive ? " active" : "")}>
+      <summary
+        aria-label={m.board_add_named({ name: p.item.name })}
+        onClick={(e) => e.stopPropagation()}
+      >
+        <FolderSimple size={14} weight={onActive ? "fill" : "regular"} />
+      </summary>
+      <div className="gallery-board-menu-list" onClick={(e) => e.stopPropagation()}>
+        {p.boards.map((board) => {
+          const checked = p.item.boardIds.includes(board.id);
+          return (
+            <label key={board.id} className="check">
+              <input
+                type="checkbox"
+                checked={checked}
+                disabled={p.disabled}
+                onChange={() => p.onToggle(board.id)}
+              />
+              {board.name}
+            </label>
+          );
+        })}
+      </div>
+    </details>
   );
 }
 
@@ -795,6 +1103,8 @@ function GalleryDetail(p: {
   pickerFull: boolean;
   alreadyUsed: boolean;
   saveDirectory: string;
+  boards: Board[];
+  onToggleBoard: (item: GalleryItem, boardId: string) => Promise<void>;
   onClose: () => void;
   onChanged: () => Promise<void>;
   onUse: (ids: string[]) => Promise<void>;
@@ -966,16 +1276,58 @@ function GalleryDetail(p: {
             >
               {m.gallery_save_name()}
             </button>
-            <button
-              aria-pressed={item.favorite}
-              aria-label={m.gallery_favorite_named({ name: item.name })}
-              disabled={locked || item.pendingDelete}
-              onClick={() =>
-                void p.run(() => patch({ favorite: !item.favorite }))
-              }
-            >
-              <Star size={15} weight={item.favorite ? "fill" : "regular"} />
-            </button>
+          </div>
+          <div className="gallery-detail-boards">
+            {p.boards.length === 0 ? (
+              <span className="muted">{m.board_empty()}</span>
+            ) : (
+              <>
+                {p.boards
+                  .filter((board) => item.boardIds.includes(board.id))
+                  .map((board) => (
+                    <button
+                      key={board.id}
+                      disabled={locked || item.pendingDelete}
+                      onClick={() =>
+                        void p.run(async () => {
+                          await p.onToggleBoard(item, board.id);
+                          await load();
+                        })
+                      }
+                    >
+                      {board.name} ×
+                    </button>
+                  ))}
+                <label className="gallery-board-select">
+                  <span className="muted">{m.board_add_to()}</span>
+                  <select
+                    aria-label={m.board_add()}
+                    disabled={locked || item.pendingDelete}
+                    value=""
+                    onChange={(e) => {
+                      const target = e.target.value;
+                      e.target.value = "";
+                      if (!target) return;
+                      void p.run(async () => {
+                        await p.onToggleBoard(item, target);
+                        await load();
+                      });
+                    }}
+                  >
+                    <option value="">
+                      {item.boardIds.length ? m.board_add() : m.board_none()}
+                    </option>
+                    {p.boards
+                      .filter((board) => !item.boardIds.includes(board.id))
+                      .map((board) => (
+                        <option key={board.id} value={board.id}>
+                          {board.name}
+                        </option>
+                      ))}
+                  </select>
+                </label>
+              </>
+            )}
           </div>
           <div className="gallery-detail-tags">
               <div className="tags">

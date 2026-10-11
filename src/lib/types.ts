@@ -214,6 +214,7 @@ export interface GalleryItem {
   filePath: string;
   byteSize: number;
   favorite: boolean;
+  boardIds: string[];
   tags: string[];
   availability: "available" | "missing";
   pendingDelete: boolean;
@@ -243,6 +244,7 @@ export interface GalleryQuery {
   createdFrom: number | null;
   createdUntil: number | null;
   favorite: boolean | null;
+  boardId: string | null;
   availability: GalleryAvailabilityFilter;
   sort: GallerySort;
   offset: number;
@@ -266,6 +268,13 @@ export interface GalleryPatch {
   favorite?: boolean;
   addTags?: string[];
   removeTags?: string[];
+}
+
+export interface Board {
+  id: string;
+  name: string;
+  createdAt: number;
+  assetCount: number;
 }
 
 export interface BatchFailure {

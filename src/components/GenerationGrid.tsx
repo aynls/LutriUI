@@ -7,6 +7,7 @@ export default function GenerationGrid(p: {
   attempts: SavedResult[];
   selected: SavedResult | null;
   onSelect: (attempt: SavedResult, index: number) => void;
+  onEdit: (attempt: SavedResult, index: number) => void;
 }) {
   return (
     <div className="generation-grid-scroll">
@@ -44,28 +45,38 @@ export default function GenerationGrid(p: {
               const active =
                 attempt.item.id === p.selected?.item.id &&
                 index === p.selected.selectedIndex;
+              const ready = Boolean(im.dataUrl);
               return (
-                <button
-                  key={index}
-                  className={active ? "active" : ""}
-                  onClick={() => p.onSelect(attempt, index)}
-                  aria-pressed={active}
-                  aria-label={
-                    attempt.item.id === p.selected?.item.id
-                      ? m.grid_view({ index: index + 1 })
-                      : m.grid_view_batch({
-                          time: formatTime(attempt.item.createdAt),
-                          index: index + 1,
-                        })
-                  }
-                >
-                  <img
-                    src={im.dataUrl}
-                    alt={m.grid_candidate({ index: index + 1 })}
-                    loading="lazy"
-                  />
-                  <span>{index + 1}</span>
-                </button>
+                <div className="generation-cell" key={index}>
+                  <button
+                    className={active ? "active" : ""}
+                    onClick={() => p.onSelect(attempt, index)}
+                    aria-pressed={active}
+                    aria-label={
+                      attempt.item.id === p.selected?.item.id
+                        ? m.grid_view({ index: index + 1 })
+                        : m.grid_view_batch({
+                            time: formatTime(attempt.item.createdAt),
+                            index: index + 1,
+                          })
+                    }
+                  >
+                    <img
+                      src={im.dataUrl}
+                      alt={m.grid_candidate({ index: index + 1 })}
+                      loading="lazy"
+                    />
+                    <span>{index + 1}</span>
+                  </button>
+                  <button
+                    className="generation-edit"
+                    disabled={!ready}
+                    onClick={() => p.onEdit(attempt, index)}
+                    aria-label={m.grid_edit_named()}
+                  >
+                    {m.grid_edit()}
+                  </button>
+                </div>
               );
             })}
           </div>

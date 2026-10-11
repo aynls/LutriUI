@@ -64,8 +64,45 @@ CREATE TABLE IF NOT EXISTS library_meta (
     key TEXT PRIMARY KEY,
     value TEXT NOT NULL
 );
-PRAGMA user_version = 1;
+CREATE TABLE IF NOT EXISTS boards (
+    id TEXT PRIMARY KEY,
+    name TEXT NOT NULL CHECK(length(name) BETWEEN 1 AND 80),
+    created_at INTEGER NOT NULL,
+    sort_order INTEGER NOT NULL DEFAULT 0
+);
+CREATE INDEX IF NOT EXISTS boards_order ON boards(sort_order ASC, created_at ASC, id ASC);
+CREATE TABLE IF NOT EXISTS board_assets (
+    board_id TEXT NOT NULL REFERENCES boards(id) ON DELETE CASCADE,
+    asset_id TEXT NOT NULL REFERENCES assets(id) ON DELETE CASCADE,
+    added_at INTEGER NOT NULL,
+    PRIMARY KEY(board_id, asset_id)
+);
+CREATE INDEX IF NOT EXISTS board_assets_asset ON board_assets(asset_id, board_id);
+CREATE INDEX IF NOT EXISTS board_assets_board_added ON board_assets(board_id, added_at DESC, asset_id DESC);
+PRAGMA user_version = 2;
 "#;
+
+/// Applied to existing user_version = 1 libraries. New libraries get the same
+/// tables from SCHEMA. Favorited rows are copied into a one-time 「收藏」 board.
+pub const BOARDS_SCHEMA: &str = r#"
+CREATE TABLE IF NOT EXISTS boards (
+    id TEXT PRIMARY KEY,
+    name TEXT NOT NULL CHECK(length(name) BETWEEN 1 AND 80),
+    created_at INTEGER NOT NULL,
+    sort_order INTEGER NOT NULL DEFAULT 0
+);
+CREATE INDEX IF NOT EXISTS boards_order ON boards(sort_order ASC, created_at ASC, id ASC);
+CREATE TABLE IF NOT EXISTS board_assets (
+    board_id TEXT NOT NULL REFERENCES boards(id) ON DELETE CASCADE,
+    asset_id TEXT NOT NULL REFERENCES assets(id) ON DELETE CASCADE,
+    added_at INTEGER NOT NULL,
+    PRIMARY KEY(board_id, asset_id)
+);
+CREATE INDEX IF NOT EXISTS board_assets_asset ON board_assets(asset_id, board_id);
+CREATE INDEX IF NOT EXISTS board_assets_board_added ON board_assets(board_id, added_at DESC, asset_id DESC);
+"#;
+
+pub const FAVORITES_BOARD_NAME: &str = "收藏";
 
 pub const ASSET_COLUMNS: &str = r#"
 a.id, a.name, a.created_at, a.width, a.height, a.mime, a.source,
@@ -73,11 +110,14 @@ a.history_id, a.model, a.provider, a.prompt, a.details_json, a.byte_size,
 a.favorite, a.pending_delete, a.availability, a.thumbnail_revision,
 (a.thumbnail IS NOT NULL) AS has_thumbnail,
 COALESCE((SELECT json_group_array(t.tag) FROM
-    (SELECT tag FROM asset_tags WHERE asset_id = a.id ORDER BY tag) t), '[]') AS tags_json
+    (SELECT tag FROM asset_tags WHERE asset_id = a.id ORDER BY tag) t), '[]') AS tags_json,
+COALESCE((SELECT json_group_array(b.board_id) FROM
+    (SELECT board_id FROM board_assets WHERE asset_id = a.id ORDER BY added_at, board_id) b), '[]') AS board_ids_json
 "#;
 
 // Bind in order: normalized search, source, model, normalized tag, fromMs inclusive,
-// untilMs exclusive, optional favorite, availability. Count and page MUST share this clause.
+// untilMs exclusive, optional favorite, availability, optional board id.
+// Count and page MUST share this clause. Page uses ?10 / ?11.
 pub const ASSET_FILTER: &str = r#"
 FROM assets a
 WHERE (?1 = '' OR instr(a.search_text, ?1) > 0 OR EXISTS (
@@ -92,13 +132,28 @@ AND (?7 IS NULL OR a.favorite = ?7)
 AND (?8 = 'all'
     OR (?8 = 'pending' AND a.pending_delete = 1)
     OR (?8 IN ('available','missing') AND a.pending_delete = 0 AND a.availability = ?8))
+AND (?9 IS NULL OR EXISTS (
+    SELECT 1 FROM board_assets b WHERE b.asset_id = a.id AND b.board_id = ?9
+))
 "#;
 
 pub const ORDER_NEWEST: &str = " ORDER BY a.created_at DESC, a.id DESC";
 pub const ORDER_OLDEST: &str = " ORDER BY a.created_at ASC, a.id ASC";
 pub const ORDER_NAME: &str = " ORDER BY a.name COLLATE NOCASE ASC, a.id ASC";
 pub const ORDER_SIZE: &str = " ORDER BY a.byte_size DESC, a.id DESC";
-pub const PAGE: &str = " LIMIT ?9 OFFSET ?10";
+pub const PAGE: &str = " LIMIT ?10 OFFSET ?11";
+pub const BOARD_INSERT: &str =
+    "INSERT INTO boards(id, name, created_at, sort_order) VALUES (?1, ?2, ?3, ?4)";
+pub const BOARD_RENAME: &str = "UPDATE boards SET name = ?2 WHERE id = ?1";
+pub const BOARD_DELETE: &str = "DELETE FROM boards WHERE id = ?1";
+pub const BOARD_ADD_ASSET: &str =
+    "INSERT OR IGNORE INTO board_assets(board_id, asset_id, added_at) VALUES (?1, ?2, ?3)";
+pub const BOARD_REMOVE_ASSET: &str =
+    "DELETE FROM board_assets WHERE board_id = ?1 AND asset_id = ?2";
+pub const FAVORITE_FROM_MEMBERSHIP: &str = r#"
+UPDATE assets SET favorite = EXISTS(SELECT 1 FROM board_assets WHERE asset_id = ?1)
+WHERE id = ?1 AND pending_delete = 0
+"#;
 pub const ASSET_BY_ID: &str = " FROM assets a WHERE a.id = ?1";
 pub const ALL_ASSETS: &str = " FROM assets a ORDER BY a.created_at DESC, a.id DESC";
 pub const TAGS: &str = "SELECT DISTINCT tag FROM asset_tags ORDER BY tag";
@@ -115,7 +170,6 @@ INSERT INTO assets(
 "#;
 pub const RENAME: &str =
     "UPDATE assets SET name = ?2, search_text = ?3 WHERE id = ?1 AND pending_delete = 0";
-pub const FAVORITE: &str = "UPDATE assets SET favorite = ?2 WHERE id = ?1 AND pending_delete = 0";
 pub const ADD_TAG: &str = "INSERT OR IGNORE INTO asset_tags(asset_id, tag) VALUES (?1, ?2)";
 pub const REMOVE_TAG: &str = "DELETE FROM asset_tags WHERE asset_id = ?1 AND tag = ?2";
 pub const MARK_DELETE: &str = "UPDATE assets SET pending_delete = 1 WHERE id = ?1";
