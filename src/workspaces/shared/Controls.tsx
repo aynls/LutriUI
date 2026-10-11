@@ -49,6 +49,8 @@ export interface WorkspaceControlsProps {
   finalPreview: string;
   onSettings: () => void;
   onGenerate: (count: number) => void;
+  getVersion: () => string;
+  applyOptimizedPrompt: (expectedVersion: string, prompt: string) => void;
   generationTask?: GenerationTask | null;
   sentRequestId?: string;
   onShowTask?: () => void;
@@ -522,10 +524,14 @@ export function PromptEditor({
   draft: d,
   onChange,
   onSettings,
+  getVersion,
+  applyOptimizedPrompt,
 }: {
   draft: Draft;
   onChange: (d: Draft) => void;
   onSettings?: () => void;
+  getVersion: () => string;
+  applyOptimizedPrompt: (expectedVersion: string, prompt: string) => void;
 }) {
   const ref = useRef<HTMLTextAreaElement>(null);
   const draftRef = useRef(d);
@@ -537,6 +543,7 @@ export function PromptEditor({
   const [optimizeNeedsSettings, setOptimizeNeedsSettings] = useState(false);
   const optimize = async () => {
     const snapshot = draftRef.current;
+    const version = getVersion();
     setOptimizeBusy(true);
     setOptimizeError("");
     setOptimizeNeedsSettings(false);
@@ -546,12 +553,9 @@ export function PromptEditor({
         await promptOptimize(snapshot.family, packOptimizeContext(snapshot))
       ).trim();
       if (!text) throw new Error(m.prompt_optimize_empty());
-      const current = draftRef.current;
-      if (current.intent !== snapshot.intent)
-        throw new Error(m.prompt_optimize_stale());
-      onChange({ ...current, prompt: text });
+      applyOptimizedPrompt(version, text);
     } catch (e) {
-      setOptimizeError(String(e));
+      setOptimizeError(e instanceof Error ? e.message : String(e));
       const code = e instanceof AppError ? e.code : "";
       setOptimizeNeedsSettings(
         code === "backend_llm_key_missing" ||

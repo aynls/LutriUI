@@ -4,6 +4,7 @@ import { newDraft } from "./workspace";
 import type { Draft } from "./types";
 import {
   DEFAULT_LLM_MODEL,
+  draftWithOptimizedPrompt,
   familyTemplate,
   genericTemplate,
   optimizeChatMessages,
@@ -118,4 +119,19 @@ test("create drafts mark that there is no edit main image", () => {
   expect(text).toContain("Edit main image: no");
   expect(text).toContain("role=composition and spatial arrangement");
   expect(text).not.toContain("CCCCsecret");
+});
+
+test("optimized prompt replaces text only while the workspace version matches", () => {
+  const live = draft();
+  const next = draftWithOptimizedPrompt(live, "inst:1", "inst:1", "rewritten");
+  expect(next.prompt).toBe("rewritten");
+  expect(next.family).toBe(live.family);
+  expect(next.refs).toEqual(live.refs);
+  expect(next.baseId).toBe(live.baseId);
+  expect(draftWithOptimizedPrompt(live, "inst:1", "inst:1", live.prompt)).toBe(
+    live,
+  );
+  expect(() =>
+    draftWithOptimizedPrompt(live, "inst:2", "inst:1", "rewritten"),
+  ).toThrow();
 });

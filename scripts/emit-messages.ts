@@ -640,7 +640,7 @@ const copy: Record<string, Entry> = {
   },
   prompt_optimize_desktop: { en: "Prompt optimize requires the desktop app", zh: "提示词优化需要桌面应用", ja: "プロンプト最適化はデスクトップアプリが必要です" },
   prompt_optimize_empty: { en: "The model returned an empty prompt", zh: "模型返回了空提示词", ja: "モデルが空のプロンプトを返しました" },
-  prompt_optimize_stale: { en: "The task changed. Run Optimize again.", zh: "任务已切换，请重新点「优化」", ja: "タスクが変わったので、もう一度「最適化」してください" },
+  prompt_optimize_stale: { en: "The draft changed. Run Optimize again.", zh: "草稿已变化，请重新点「优化」", ja: "下書きが変わったので、もう一度「最適化」してください" },
   prompt_optimize_open_settings: { en: "Open settings", zh: "打开设置", ja: "設定を開く" },
   settings_defaults: { en: "Defaults for new work", zh: "新建默认值", ja: "新規作成の既定値" },
   settings_appearance: { en: "Appearance", zh: "外观", ja: "外観" },

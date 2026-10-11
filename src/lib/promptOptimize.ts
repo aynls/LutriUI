@@ -1,4 +1,5 @@
 import templates from "../../shared/prompt-optimize.json";
+import { m } from "../i18n";
 import { familyById, modelById, pickParams, routeFor } from "../models/catalog";
 import { promptLength } from "../models";
 import { regionsEnabled } from "../models/flux/layout";
@@ -97,6 +98,22 @@ export function familyTemplate(family: FamilyId | string): string[] {
 
 export function genericTemplate(): string[] {
   return templates.generic;
+}
+
+/**
+ * Apply a finished optimize result only when the workspace version is still the
+ * one captured at click time. Any replace — family switch, reorder, undo —
+ * bumps that version, so a late reply cannot write an old draft over the current task.
+ */
+export function draftWithOptimizedPrompt(
+  live: Draft,
+  liveVersion: string,
+  expectedVersion: string,
+  prompt: string,
+): Draft {
+  if (liveVersion !== expectedVersion) throw new Error(m.prompt_optimize_stale());
+  if (live.prompt === prompt) return live;
+  return { ...live, prompt };
 }
 
 /** Documents the Chat Completions payload shape. The desktop backend builds the live request. */
