@@ -213,7 +213,7 @@ export interface GalleryItem {
   details?: GenerationDetails | null;
   filePath: string;
   byteSize: number;
-  favorite: boolean;
+  boardIds: string[];
   tags: string[];
   availability: "available" | "missing";
   pendingDelete: boolean;
@@ -242,7 +242,7 @@ export interface GalleryQuery {
   tag: string | null;
   createdFrom: number | null;
   createdUntil: number | null;
-  favorite: boolean | null;
+  boardId: string | null;
   availability: GalleryAvailabilityFilter;
   sort: GallerySort;
   offset: number;
@@ -263,9 +263,15 @@ export interface GalleryFacets {
 
 export interface GalleryPatch {
   name?: string;
-  favorite?: boolean;
   addTags?: string[];
   removeTags?: string[];
+}
+
+export interface Board {
+  id: string;
+  name: string;
+  createdAt: number;
+  assetCount: number;
 }
 
 export interface BatchFailure {
@@ -282,7 +288,6 @@ export interface GalleryBatchResult {
 export interface LibraryStats {
   totalCount: number;
   missingCount: number;
-  favoriteCount: number;
   pendingDeleteCount: number;
   originalBytes: number;
   thumbnailBytes: number;

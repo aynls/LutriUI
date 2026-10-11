@@ -1138,6 +1138,7 @@ impl Mcp {
                     "gallery_query" => native_gallery_query(&app, args).await,
                     "gallery_read" => native_gallery_read(&app, args).await,
                     "gallery_import" => native_gallery_import(&app, args).await,
+                    "gallery_board" => native_gallery_board(&app, args).await,
                     _ => {
                         let bridge = Bridge {
                             app: OnceLock::new(),
@@ -1187,10 +1188,14 @@ fn parse_gallery_query(args: &Value) -> Result<crate::gallery::GalleryQuery, Too
 
 async fn native_gallery_query(app: &AppHandle, args: Value) -> ToolResult {
     let query = parse_gallery_query(&args)?;
-    let page = with_store(app, move |store| store.gallery_query(query)).await?;
+    let (page, boards) = with_store(app, move |store| {
+        Ok((store.gallery_query(query)?, store.board_list()?))
+    })
+    .await?;
     Ok(ToolOutput {
         structured: json!({
             "assets": page.items.iter().map(project_gallery).collect::<Vec<_>>(),
+            "boards": boards,
             "total": page.total,
             "offset": page.offset,
             "limit": page.limit,
@@ -1292,6 +1297,130 @@ async fn native_gallery_import(app: &AppHandle, args: Value) -> ToolResult {
         structured: json!({ "asset": project_gallery(&item) }),
         images: vec![],
     })
+}
+
+fn uuid_list(value: Option<&Value>) -> Result<Vec<String>, ToolError> {
+    value
+        .and_then(Value::as_array)
+        .ok_or_else(|| ToolError::new("INVALID_ARGS", "assetIds is required"))?
+        .iter()
+        .map(|v| {
+            v.as_str()
+                .map(str::to_string)
+                .ok_or_else(|| ToolError::new("INVALID_ARGS", "assetIds must be UUID strings"))
+        })
+        .collect()
+}
+
+fn emit_library(app: &AppHandle) {
+    let _ = app.emit_to(MAIN_WINDOW, LIBRARY_EVENT, json!({}));
+}
+
+async fn native_gallery_board(app: &AppHandle, args: Value) -> ToolResult {
+    let op = args
+        .get("op")
+        .and_then(Value::as_str)
+        .ok_or_else(|| ToolError::new("INVALID_ARGS", "op is required"))?
+        .to_string();
+    match op.as_str() {
+        "list" => {
+            let boards = with_store(app, |store| store.board_list()).await?;
+            Ok(ToolOutput {
+                structured: json!({ "boards": boards }),
+                images: vec![],
+            })
+        }
+        "create" => {
+            let name = args
+                .get("name")
+                .and_then(Value::as_str)
+                .ok_or_else(|| ToolError::new("INVALID_ARGS", "name is required"))?
+                .to_string();
+            let board = with_store(app, move |store| store.board_create(&name)).await?;
+            emit_library(app);
+            Ok(ToolOutput {
+                structured: json!({ "board": board }),
+                images: vec![],
+            })
+        }
+        "rename" => {
+            let id = args
+                .get("boardId")
+                .and_then(Value::as_str)
+                .ok_or_else(|| ToolError::new("INVALID_ARGS", "boardId is required"))?
+                .to_string();
+            let name = args
+                .get("name")
+                .and_then(Value::as_str)
+                .ok_or_else(|| ToolError::new("INVALID_ARGS", "name is required"))?
+                .to_string();
+            let board = with_store(app, move |store| store.board_rename(&id, &name)).await?;
+            emit_library(app);
+            Ok(ToolOutput {
+                structured: json!({ "board": board }),
+                images: vec![],
+            })
+        }
+        "delete" => {
+            let id = args
+                .get("boardId")
+                .and_then(Value::as_str)
+                .ok_or_else(|| ToolError::new("INVALID_ARGS", "boardId is required"))?
+                .to_string();
+            with_store(app, move |store| store.board_delete(&id)).await?;
+            emit_library(app);
+            Ok(ToolOutput {
+                structured: json!({ "ok": true }),
+                images: vec![],
+            })
+        }
+        "add" | "remove" => {
+            let id = args
+                .get("boardId")
+                .and_then(Value::as_str)
+                .ok_or_else(|| ToolError::new("INVALID_ARGS", "boardId is required"))?
+                .to_string();
+            let ids = uuid_list(args.get("assetIds"))?;
+            let add = op == "add";
+            let result = with_store(app, move |store| {
+                if add {
+                    store.board_add(&id, &ids)
+                } else {
+                    store.board_remove(&id, &ids)
+                }
+            })
+            .await?;
+            emit_library(app);
+            Ok(ToolOutput {
+                structured: serde_json::to_value(result).unwrap_or(Value::Null),
+                images: vec![],
+            })
+        }
+        "move" => {
+            let from = args
+                .get("fromBoardId")
+                .and_then(Value::as_str)
+                .ok_or_else(|| ToolError::new("INVALID_ARGS", "fromBoardId is required"))?
+                .to_string();
+            let to = args
+                .get("toBoardId")
+                .and_then(Value::as_str)
+                .ok_or_else(|| ToolError::new("INVALID_ARGS", "toBoardId is required"))?
+                .to_string();
+            let ids = uuid_list(args.get("assetIds"))?;
+            let result =
+                with_store(app, move |store| store.board_move(&from, &to, &ids)).await?;
+            emit_library(app);
+            Ok(ToolOutput {
+                structured: serde_json::to_value(result).unwrap_or(Value::Null),
+                images: vec![],
+            })
+        }
+        other => Err(ToolError::new(
+            "INVALID_ARGS",
+            format!("unknown board op {other}"),
+        )),
+    }
 }
 
 /// Pure projection seam so the empty-result branch is testable without Tauri.
@@ -1528,8 +1657,19 @@ mod tests {
         assert_eq!(resp.status(), StatusCode::OK);
         let body: Value = resp.json().await.unwrap();
         let tools = body["result"]["tools"].as_array().unwrap();
-        assert_eq!(tools.len(), 11);
+        assert_eq!(tools.len(), 12);
         assert!(tools.iter().any(|t| t["name"] == "workspace_get"));
+        assert!(tools.iter().any(|t| t["name"] == "gallery_board"));
+        let query = tools
+            .iter()
+            .find(|t| t["name"] == "gallery_query")
+            .unwrap();
+        assert!(query["inputSchema"]["properties"]["query"]["properties"]
+            .get("favorite")
+            .is_none());
+        assert!(query["inputSchema"]["properties"]["query"]["properties"]
+            .get("boardId")
+            .is_some());
 
         // One bridged workspace_get succeeds and reaches the dispatcher.
         let resp = post(
@@ -1665,5 +1805,50 @@ mod tests {
             .unwrap()
             .get("issuedToken")
             .is_none());
+    }
+
+    fn validator(name: &str) -> &'static jsonschema::Validator {
+        let registry = tools_file().unwrap();
+        let index = registry
+            .tools
+            .iter()
+            .position(|t| t.name.as_ref() == name)
+            .unwrap();
+        &registry.validators[index]
+    }
+
+    #[test]
+    fn gallery_query_schema_is_board_only() {
+        let v = validator("gallery_query");
+        let board = Uuid::new_v4().to_string();
+        assert!(v.validate(&json!({ "query": { "boardId": board } })).is_ok());
+        assert!(v.validate(&json!({ "query": { "favorite": true } })).is_err());
+    }
+
+    #[test]
+    fn gallery_board_schema_accepts_ops() {
+        let v = validator("gallery_board");
+        let board = Uuid::new_v4().to_string();
+        let asset = Uuid::new_v4().to_string();
+        let other = Uuid::new_v4().to_string();
+        assert!(v.validate(&json!({ "op": "list" })).is_ok());
+        assert!(v.validate(&json!({ "op": "create", "name": "Looks" })).is_ok());
+        assert!(v
+            .validate(&json!({ "op": "rename", "boardId": board, "name": "Kept" }))
+            .is_ok());
+        assert!(v.validate(&json!({ "op": "delete", "boardId": board })).is_ok());
+        assert!(v
+            .validate(&json!({ "op": "add", "boardId": board, "assetIds": [asset] }))
+            .is_ok());
+        assert!(v
+            .validate(&json!({
+                "op": "move",
+                "fromBoardId": board,
+                "toBoardId": other,
+                "assetIds": [asset]
+            }))
+            .is_ok());
+        assert!(v.validate(&json!({ "op": "list", "name": "Looks" })).is_err());
+        assert!(v.validate(&json!({ "op": "favorite" })).is_err());
     }
 }

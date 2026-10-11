@@ -8,7 +8,7 @@ use std::time::Duration;
 use uuid::Uuid;
 
 pub use crate::gallery::{
-    BatchFailure, GalleryBatchResult, GalleryFacets, GalleryItem, GalleryPage, GalleryPatch,
+    BatchFailure, Board, GalleryBatchResult, GalleryFacets, GalleryItem, GalleryPage, GalleryPatch,
     GalleryQuery, ImportedImage, LibraryStats, MaintainOp, MaintenanceReport,
 };
 pub use crate::history::{GenerationFile, HistoryItem};
@@ -18,7 +18,7 @@ pub(crate) const THUMB_SIZE: u32 = 384;
 const MAX_FILE: u64 = 64 * 1024 * 1024;
 const MAX_DATA_URL: usize = 90_000_000;
 const MAX_PIXELS: u64 = 64_000_000;
-pub(crate) const SUPPORTED_VERSION: i64 = 1;
+pub(crate) const SUPPORTED_VERSION: i64 = 3;
 
 pub struct LibraryStore {
     pub(crate) root: PathBuf,
@@ -70,7 +70,7 @@ impl LibraryStore {
         let version: i64 = conn
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .map_err(|e| store_failed("inspect library database", e))?;
-        if version != 0 && version != SUPPORTED_VERSION {
+        if version != 0 && version != 1 && version != 2 && version != SUPPORTED_VERSION {
             return Err(String::from(
                 ProviderError::coded(
                     "backend_library_unsupported",
@@ -85,6 +85,9 @@ impl LibraryStore {
         } else {
             conn.execute_batch("PRAGMA journal_mode = WAL;")
                 .map_err(|e| store_failed("configure library database", e))?;
+            if version < SUPPORTED_VERSION {
+                migrate_library(&conn).map_err(|e| store_failed("upgrade library database", e))?;
+            }
         }
         // Feature tables outside user_version run for both new and existing libraries.
         conn.execute_batch(library_sql::MCP_SCHEMA)
@@ -160,6 +163,34 @@ impl LibraryStore {
         }
         Ok(())
     }
+}
+
+fn migrate_library(conn: &Connection) -> Result<(), rusqlite::Error> {
+    conn.execute_batch(library_sql::BOARDS_SCHEMA)?;
+    drop_favorite_column(conn)?;
+    conn.pragma_update(None, "user_version", SUPPORTED_VERSION)?;
+    Ok(())
+}
+
+fn drop_favorite_column(conn: &Connection) -> Result<(), rusqlite::Error> {
+    let has_favorite = {
+        let mut stmt = conn.prepare("PRAGMA table_info(assets)")?;
+        let names = stmt.query_map([], |r| r.get::<_, String>(1))?;
+        let mut found = false;
+        for name in names {
+            if name? == "favorite" {
+                found = true;
+                break;
+            }
+        }
+        found
+    };
+    if has_favorite {
+        conn.execute_batch(
+            "DROP INDEX IF EXISTS assets_favorite_date; ALTER TABLE assets DROP COLUMN favorite;",
+        )?;
+    }
+    Ok(())
 }
 
 pub(crate) fn store_failed(context: &str, e: impl std::fmt::Display) -> String {

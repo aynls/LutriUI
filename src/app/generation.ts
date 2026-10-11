@@ -25,6 +25,20 @@ export interface SavedResult {
 export function getResultBase(result: SavedResult | null) {
   return result ? primaryImage(result.snapshot) : null;
 }
+/** Gallery-backed candidate for Edit; size is decoded by the caller. */
+export function workingImageFromResult(
+  result: SavedResult,
+  index: number,
+  size: { width: number; height: number },
+): WorkingImage {
+  return {
+    uid: crypto.randomUUID(),
+    dataUrl: result.out.images[index].dataUrl,
+    ...size,
+    name: m.name_result_n({ index: index + 1 }),
+    assetId: result.item.resultAssetIds?.[index],
+  };
+}
 /** Persist the immutable recipe and original inputs before any provider call. */
 export function queuedGeneration(snapshot: Draft) {
   if (fieldsFor(snapshot).seed && snapshot.params.seed == null) {

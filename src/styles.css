@@ -1598,11 +1598,16 @@ button {
   grid-template-columns: repeat(auto-fill, minmax(min(180px, 100%), 1fr));
   gap: 10px;
 }
-.generation-grid button {
+.generation-cell {
+  position: relative;
+  min-width: 0;
+}
+.generation-cell > button:first-of-type {
   position: relative;
   padding: 5px;
   aspect-ratio: 1;
   min-width: 0;
+  width: 100%;
   background: var(--surface-alt);
 }
 .generation-grid img {
@@ -1610,13 +1615,28 @@ button {
   width: 100%;
   object-fit: contain;
 }
-.generation-grid button > span {
+.generation-cell > button:first-of-type > span {
   position: absolute;
   left: 10px;
   bottom: 10px;
   font-size: 12px;
   padding: 2px 7px;
   background: var(--glass);
+  border-radius: 4px;
+}
+.generation-edit,
+.gallery-edit {
+  position: absolute;
+  right: 7px;
+  bottom: 7px;
+  z-index: 1;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 5px 8px;
+  font-size: 12px;
+  background: var(--glass);
+  border: 0;
   border-radius: 4px;
 }
 .result-panel-compact .result-actions {
@@ -1642,6 +1662,9 @@ button {
 .gallery-cell {
   position: relative;
   min-width: 0;
+}
+.gallery-tile-wrap {
+  position: relative;
 }
 .gallery-peek {
   position: absolute;
@@ -1793,7 +1816,8 @@ button {
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-.gallery-fav {
+.gallery-fav,
+.gallery-board-menu {
   position: absolute;
   top: 7px;
   left: 7px;
@@ -1803,8 +1827,64 @@ button {
   border-radius: 4px;
   color: var(--text);
 }
-.gallery-fav.active {
+.gallery-fav.active,
+.gallery-board-menu.active {
   color: var(--accent);
+}
+.gallery-board-menu {
+  z-index: 2;
+}
+.gallery-board-menu > summary {
+  list-style: none;
+  cursor: pointer;
+  display: grid;
+  place-items: center;
+}
+.gallery-board-menu > summary::-webkit-details-marker {
+  display: none;
+}
+.gallery-board-menu-list {
+  position: absolute;
+  top: 100%;
+  left: 0;
+  margin-top: 4px;
+  min-width: 140px;
+  padding: 8px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  display: grid;
+  gap: 6px;
+}
+.gallery-boards,
+.gallery-board-edit,
+.gallery-detail-boards {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.gallery-boards {
+  flex-shrink: 0;
+}
+.gallery-boards > button.active {
+  background: var(--accent);
+  color: var(--accent-text);
+}
+.gallery-boards > button.active .muted {
+  color: inherit;
+  opacity: 0.75;
+}
+.gallery-board-edit input {
+  width: 140px;
+}
+.gallery-board-select {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.gallery-detail-boards {
+  margin: 8px 0;
 }
 .gallery-sort,
 .gallery-filter-row label {

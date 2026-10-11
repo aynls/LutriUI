@@ -15,6 +15,7 @@ import type {
   WorkspaceSession,
   ProviderId,
   CredentialSettings,
+  Board,
   GalleryItem,
   GalleryQuery,
   GalleryPage,
@@ -194,7 +195,11 @@ export const libraryMigrate = (path: string) =>
   call<LibraryMigration>("library_migrate", { path });
 
 function withDefaultItemName(item: GalleryItem): GalleryItem {
-  return item.name ? item : { ...item, name: m.default_name_generated() };
+  return {
+    ...item,
+    name: item.name || m.default_name_generated(),
+    boardIds: item.boardIds ?? [],
+  };
 }
 
 function localizedBatch(result: GalleryBatchResult): GalleryBatchResult {
@@ -233,6 +238,29 @@ export const galleryImport = (
     name: image.name,
     source,
   }).then(withDefaultItemName);
+export const boardList = () => call<Board[]>("board_list");
+export const boardCreate = (name: string) => call<Board>("board_create", { name });
+export const boardRename = (id: string, name: string) =>
+  call<Board>("board_rename", { id, name });
+export const boardDelete = (id: string) => call<void>("board_delete", { id });
+export const boardAdd = async (boardId: string, ids: string[]) =>
+  localizedBatch(await call<GalleryBatchResult>("board_add", { boardId, ids }));
+export const boardRemove = async (boardId: string, ids: string[]) =>
+  localizedBatch(
+    await call<GalleryBatchResult>("board_remove", { boardId, ids }),
+  );
+export const boardMove = async (
+  fromBoardId: string,
+  toBoardId: string,
+  ids: string[],
+) =>
+  localizedBatch(
+    await call<GalleryBatchResult>("board_move", {
+      fromBoardId,
+      toBoardId,
+      ids,
+    }),
+  );
 export const galleryRead = async (id: string): Promise<ImportedImage> => ({
   ...withDefaultName(
     await call<ImportedImage>("gallery_read", { id }),

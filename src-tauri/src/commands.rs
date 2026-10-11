@@ -5,7 +5,7 @@ use serde::Serialize;
 use tauri::{Emitter, Manager, State};
 
 use crate::gallery::{
-    GalleryBatchResult, GalleryFacets, GalleryItem, GalleryPage, GalleryPatch, GalleryQuery,
+    Board, GalleryBatchResult, GalleryFacets, GalleryItem, GalleryPage, GalleryPatch, GalleryQuery,
     ImportedImage, LibraryStats, MaintainOp, MaintenanceReport,
 };
 use crate::history::{GenerationFile, HistoryItem, McpSubmissionRecord};
@@ -728,6 +728,61 @@ pub async fn gallery_import(
 #[tauri::command]
 pub async fn gallery_read(app: tauri::AppHandle, id: String) -> Result<ImportedImage, String> {
     with_library(app, move |store| store.gallery_read(&id)).await
+}
+
+#[tauri::command]
+pub async fn board_list(app: tauri::AppHandle) -> Result<Vec<Board>, String> {
+    with_library(app, |store| store.board_list()).await
+}
+
+#[tauri::command]
+pub async fn board_create(app: tauri::AppHandle, name: String) -> Result<Board, String> {
+    with_library(app, move |store| store.board_create(&name)).await
+}
+
+#[tauri::command]
+pub async fn board_rename(
+    app: tauri::AppHandle,
+    id: String,
+    name: String,
+) -> Result<Board, String> {
+    with_library(app, move |store| store.board_rename(&id, &name)).await
+}
+
+#[tauri::command]
+pub async fn board_delete(app: tauri::AppHandle, id: String) -> Result<(), String> {
+    with_library(app, move |store| store.board_delete(&id)).await
+}
+
+#[tauri::command]
+pub async fn board_add(
+    app: tauri::AppHandle,
+    board_id: String,
+    ids: Vec<String>,
+) -> Result<GalleryBatchResult, String> {
+    with_library(app, move |store| store.board_add(&board_id, &ids)).await
+}
+
+#[tauri::command]
+pub async fn board_remove(
+    app: tauri::AppHandle,
+    board_id: String,
+    ids: Vec<String>,
+) -> Result<GalleryBatchResult, String> {
+    with_library(app, move |store| store.board_remove(&board_id, &ids)).await
+}
+
+#[tauri::command]
+pub async fn board_move(
+    app: tauri::AppHandle,
+    from_board_id: String,
+    to_board_id: String,
+    ids: Vec<String>,
+) -> Result<GalleryBatchResult, String> {
+    with_library(app, move |store| {
+        store.board_move(&from_board_id, &to_board_id, &ids)
+    })
+    .await
 }
 
 #[tauri::command]

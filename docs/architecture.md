@@ -17,7 +17,7 @@ LutriUI 将模型契约、工作区和供应商传输分开。新增模型时，
 
 `Draft` 保存规范模型编号 `modelId`，供应商原生编号放在路由目录中。`routeSettings` 按模型和供应商保存参数；切回时恢复原设置，同家族的新路由会投影共享参数，不同家族首次使用其新建默认值，参数变化显示具体调整摘要。发送时只使用当前路由白名单中的字段。切换到不支持蒙版的路由时，保留蒙版并阻止提交，供用户切回或移除。供应商不会自动切换。
 
-草稿格式为 `Draft.schema = 4`，会话格式为 `WorkspaceSession.schema = 2`。`tasks.create` 和 `tasks.edit` 保存两份任务内容，撤销栈在当前会话中分别管理，`familyRoutes` 记忆每个家族最近使用的模型与供应商。模型选择不再切换整份草稿，结果也按生成/编辑任务归属。会话写入图库 SQLite 的 `workspace` 表；不迁移旧格式。损坏内容继续保留，直到用户明确新建方案。
+草稿格式为 `Draft.schema = 4`，会话格式为 `WorkspaceSession.schema = 2`，图库格式为 `PRAGMA user_version = 3`。`tasks.create` 和 `tasks.edit` 保存两份任务内容，撤销栈在当前会话中分别管理，`familyRoutes` 记忆每个家族最近使用的模型与供应商。模型选择不再切换整份草稿，结果也按生成/编辑任务归属。会话写入图库 SQLite 的 `workspace` 表；不迁移旧格式。损坏内容继续保留，直到用户明确新建方案。
 
 ## 已接入的组合
 
@@ -82,7 +82,7 @@ FLUX 主图等比显示。移除区域保留虚线标记。来源标记的显示
 
 图库根目录默认为 `app_data_dir/workbench`，用户可在设置的存储页选择其他目录；所选规范绝对路径原子保存在 `app_data_dir/library-location.json`（不在迁移目标内）。`storage.rs` 的迁移在存储门互斥下执行：数据库不直接复制文件，而是用 `rusqlite::backup::Backup` 写入目标 `library.sqlite3` 并运行 `quick_check` 校验，WAL/SHM 旁文件不参与复制；其余文件整树复制并逐块校验字节，拒绝符号链接、重解析点、非空目录以及源目录的祖先或后代目标；复制完成并打开新存储、注册图片资产作用域后才提交位置并切换活动根，源目录始终保留。凭据、密钥来源和前端偏好不随根目录迁移。
 
-图库查询始终在数据库中分页（每页至多 120 张），支持搜索、来源、模型、标签、收藏、可用状态和日期区间过滤，以及最新、最早、名称和大小排序；前端只持有已加载页，不会一次取回整库。工作区选图复用同一组件，按选择顺序读入独立工作副本，检查已用素材和剩余名额。详情页提供名称、收藏和标签编辑，元数据修改在同一事务内完成；批量操作按资产返回逐项成败。所有图库操作只接受资产 ID，后端解析 UUID 对应的受管目录；删除先持久化删除标记，再删除文件和数据行，中断后可在重启时继续。生成输出使用记录 ID 与批次结果序号去重，删除资产后保留内部去重标记与有序关联，防止下一次批次保存恢复已删图片。删除图库图像不删除生成参数记录，记录中的对应结果显示已删除；删除生成记录不删除图库文件。设置页提供登记数量、缺失原图、待删除数量、原图与数据库字节数和上次检查时间，以及文件检查、缩略图重建和缺失记录清理（需确认）。新存储不读取或迁移旧 `history/`、`gallery/index.json` 与 `session.json`；`LibraryStore` 是纯服务层，与传输无关，MCP 原生图库/任务工具与 Tauri 命令经 `library_access.rs` 的同一迁移门访问它。
+图库查询始终在数据库中分页（每页至多 120 张），支持搜索、来源、模型、标签、图板、可用状态和日期区间过滤，以及最新、最早、名称和大小排序；前端只持有已加载页，不会一次取回整库。扁平图板可创建、重命名、删除；图片可加入、移出或在图板之间移动。图库不再使用收藏标记：打开旧库时只补齐图板表并删除 `favorite` 列，不把星标迁入任何图板。MCP `gallery_query` 用 `boardId` 筛选，返回 `boardIds` 与全部图板；`gallery_board` 负责图板 CRUD 与成员变更。工作区选图复用同一组件，按选择顺序读入独立工作副本，检查已用素材和剩余名额。详情页提供名称、图板和标签编辑，元数据修改在同一事务内完成；批量操作按资产返回逐项成败。生成结果网格与图库资产提供「用这张去 Edit」：切换到编辑任务、设为主图、清空上一轮编辑指令，并按现有交接规则决定是否沿用参考图；不把 Create 的蒙版或区域拷到新主图上。所有图库操作只接受资产 ID，后端解析 UUID 对应的受管目录；删除先持久化删除标记，再删除文件和数据行，中断后可在重启时继续。生成输出使用记录 ID 与批次结果序号去重，删除资产后保留内部去重标记与有序关联，防止下一次批次保存恢复已删图片。删除图库图像不删除生成参数记录，记录中的对应结果显示已删除；删除生成记录不删除图库文件。设置页提供登记数量、缺失原图、待删除数量、原图与数据库字节数和上次检查时间，以及文件检查、缩略图重建和缺失记录清理（需确认）。新存储不读取或迁移旧 `history/`、`gallery/index.json` 与 `session.json`；`LibraryStore` 是纯服务层，与传输无关，MCP 原生图库/任务工具与 Tauri 命令经 `library_access.rs` 的同一迁移门访问它。
 
 所有工作区共用「参数栏 → 参考素材栏 → 画布或生成结果」的布局。蒙版在原图像素空间绘制，画笔清除 alpha、橡皮恢复不透明像素；每次笔划结束保存一张 PNG，并作为一次撤销操作。矩形和导入蒙版可与笔划叠加。
 
@@ -98,15 +98,15 @@ Comfy 预估独立保存在 `shared/comfy-pricing.json`，记录核验日期与�
 
 ## MCP 智能体接入
 
-应用内置进程内 MCP 服务（`src-tauri/src/mcp.rs`），使用官方 `rmcp` SDK 的 Streamable HTTP 传输，只绑定 `127.0.0.1`（默认端口 39631，1024–65535 可配），不做第二个 JSON-RPC 实现或独立守护进程。HTTP 边界在每个 MCP 方法分发前校验：Bearer 令牌（常量时间比较，只存系统凭据 `app.lutriui.mcp`/`access-token`，不进入配置、数据库或日志）、Host 必须匹配 `127.0.0.1:<port>` 或 `localhost:<port>`、存在的 Origin 必须是合法 UTF-8 的本地回环来源，未授权 401、越界 403，不开放 CORS。工具定义固定来自 `shared/mcp-tools.json` 的 11 个工具；参数在分发前用 jsonschema（Draft 2020-12，启用 format 校验）按已发布 schema 深校验，错误只回 JSON 指针路径，不回显数据体。
+应用内置进程内 MCP 服务（`src-tauri/src/mcp.rs`），使用官方 `rmcp` SDK 的 Streamable HTTP 传输，只绑定 `127.0.0.1`（默认端口 39631，1024–65535 可配），不做第二个 JSON-RPC 实现或独立守护进程。HTTP 边界在每个 MCP 方法分发前校验：Bearer 令牌（常量时间比较，只存系统凭据 `app.lutriui.mcp`/`access-token`，不进入配置、数据库或日志）、Host 必须匹配 `127.0.0.1:<port>` 或 `localhost:<port>`、存在的 Origin 必须是合法 UTF-8 的本地回环来源，未授权 401、越界 403，不开放 CORS。工具定义固定来自 `shared/mcp-tools.json` 的 12 个工具；参数在分发前用 jsonschema（Draft 2020-12，启用 format 校验）按已发布 schema 深校验，错误只回 JSON 指针路径，不回显数据体。
 
 配置 `{enabled, port}` 原子保存在 `app_data_dir/mcp.json`；`configure`/`start`/`rotate`/`stop` 由生命周期互斥串行：先准备令牌、监听套接字和持久化配置，再原子替换活动认证与服务器，失败保留旧端点；同端口已运行直接返回；禁用先写盘再停止；监听器崩溃反映为 `running:false` 加状态事件。轮换令牌先写凭据库再替换活动认证，旧 Bearer 下一请求即失效。用户启用服务时若凭据库没有令牌，新令牌只随该次 `configure` 结果返回并在设置页直接显示；启动失败则留到下一次成功的启用再返回。状态事件不携带令牌。敏感命令只接受 `main` 窗口。
 
 工作区/任务操作通过有界桥接到达活动 WebView：Rust 保存至多 32 条 pending（30 秒超时），向主窗口发送 `mcp-request`（requestId、instanceId、operation、args、deadlineMs）；前端先入队再在分发前 `mcp_bridge_claim`，已认领工作超时或断开返回 `OUTCOME_UNKNOWN`（附 idempotencyKey/expectedVersion 提示），未认领返回 `UI_NOT_READY`；不同实例注册会取消先前 pending，同实例重复注册是空操作；分发 future 被丢弃时由 drop guard 移除 pending 项，不会耗尽容量。工作区与生成恢复完成后前端才注册，卸载或失焦只移除匹配实例。
 
-工具分为两层：图库与任务读取/导入在 Rust 侧直接用 `LibraryStore`（经 `library_access.rs` 的迁移门与阻塞池）；`task_get` 投影历史记录的公开字段，空结果列表不再查图库。工作区操作走 React 桥的共享动作层（`src/app/applicationActions.ts`、`workspaceActions.ts`、`useMcpBridge.ts`）——UI 的生成按钮与 MCP `task_submit` 走同一条 `prepareGeneration` → 校验 → 持久化 → 提交路径，提交的是 `singleImageDraft` 不可变快照。工作区版本是 `${instanceId}:${revision}` 的内存纪元（重启即新纪元），每次 `replace` 同步递增；`expectedVersion` 不匹配返回 `VERSION_CONFLICT`。已声明动作在资源 await 前后检查活动性（disposed/实例/截止时间），过期抛出 `REQUEST_EXPIRED`，不会写入。`workspace_patch` 的参数校验严格按目标路由 `fieldsFor` 推导：未知键、错误类型、越界、`count≠1` 都拒绝且不提交；成功补丁在 `flushSync` 内恰好一次 `commit(..., true)`，可整体撤销。
+工具分为两层：图库、图板与任务读取/导入在 Rust 侧直接用 `LibraryStore`（经 `library_access.rs` 的迁移门与阻塞池）；`task_get` 投影历史记录的公开字段，空结果列表不再查图库。工作区操作走 React 桥的共享动作层（`src/app/applicationActions.ts`、`workspaceActions.ts`、`useMcpBridge.ts`）——UI 的生成按钮与 MCP `task_submit` 走同一条 `prepareGeneration` → 校验 → 持久化 → 提交路径，提交的是 `singleImageDraft` 不可变快照。工作区版本是 `${instanceId}:${revision}` 的内存纪元（重启即新纪元），每次 `replace` 同步递增；`expectedVersion` 不匹配返回 `VERSION_CONFLICT`。已声明动作在资源 await 前后检查活动性（disposed/实例/截止时间），过期抛出 `REQUEST_EXPIRED`，不会写入。`workspace_patch` 的参数校验严格按目标路由 `fieldsFor` 推导：未知键、错误类型、越界、`count≠1` 都拒绝且不提交；成功补丁在 `flushSync` 内恰好一次 `commit(..., true)`，可整体撤销。
 
-删除仍被旧提示词引用的参考图时，补丁仍然成功；若未同时提供面向最终引用顺序的新提示词，响应通过 `warnings` 返回 `PROMPT_REFERENCES_REMOVED`、原始图片标签和已移除引用，要求智能体检查返回的提示词并在提交前修正。区域以 `uid` 作为身份和去重依据，省略即新建；`id` 仍须作为提示词标签保持唯一。`gallery_query` 省略 `query` 等同于空对象。`task_get` 保留结果资产 ID 与顺序，以 `available`、`missing`、`pendingDelete`、`deleted` 区分结果可用性，不改写任务成功状态。
+删除仍被旧提示词引用的参考图时，补丁仍然成功；若未同时提供面向最终引用顺序的新提示词，响应通过 `warnings` 返回 `PROMPT_REFERENCES_REMOVED`、原始图片标签和已移除引用，要求智能体检查返回的提示词并在提交前修正。区域以 `uid` 作为身份和去重依据，省略即新建；`id` 仍须作为提示词标签保持唯一。`gallery_query` 省略 `query` 等同于空对象，并返回当前图板列表。`gallery_board` 用 `op` 区分 list/create/rename/delete/add/remove/move。`task_get` 保留结果资产 ID 与顺序，以 `available`、`missing`、`pendingDelete`、`deleted` 区分结果可用性，不改写任务成功状态。
 
 `task_submit` 的幂等账本 `mcp_submissions`（`library_sql.rs` 的 MCP_SCHEMA）与初始历史记录在同一事务写入、独立于历史删除而存活：相同 `idempotencyKey`+`workspaceVersion` 返回原 `taskId` 且不重复提交，版本冲突拒绝 `IDEMPOTENCY_CONFLICT`，前端同 key 并发共享同一 promise。图片始终以资产 ID 或工作区 uid 引用，无文件路径访问；供应商凭据与应用设置不通过工具暴露；提交即可能扣费，没有额外确认环节。
 

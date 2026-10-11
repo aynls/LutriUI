@@ -57,7 +57,11 @@ import type {
   Draft,
 } from "./lib/types";
 
-import { getResultBase, type SavedResult } from "./app/generation";
+import {
+  getResultBase,
+  workingImageFromResult,
+  type SavedResult,
+} from "./app/generation";
 import { ResultStage, ResultActions } from "./components/Results";
 import { updateFluxBoxes } from "./models/flux/regions";
 import { m } from "./i18n";
@@ -862,15 +866,25 @@ export default function App() {
       storeResult({
         ...target,
         selectedIndex: index,
-        image: {
-          uid: crypto.randomUUID(),
-          dataUrl: im.dataUrl,
-          ...size,
-          name: m.name_result_n({ index: index + 1 }),
-        },
+        image: workingImageFromResult(target, index, size),
       });
       setView("result");
       setResultPreview(preview);
+    } catch (e) {
+      showNotice(m.notice_result_read_failed({ detail: String(e) }));
+    }
+  };
+  const editResultImage = async (attempt: SavedResult, index: number) => {
+    const im = attempt.out.images[index];
+    if (!im?.dataUrl) return;
+    try {
+      const image = workingImageFromResult(
+        attempt,
+        index,
+        await imageSize(im.dataUrl),
+      );
+      if ((await useResult(image, true, attempt.snapshot)) && resultPreview)
+        setResultPreview(false);
     } catch (e) {
       showNotice(m.notice_result_read_failed({ detail: String(e) }));
     }
@@ -1229,6 +1243,7 @@ export default function App() {
                 attempts={attempts[activeKey] ?? []}
                 selected={result}
                 onSelect={(r, i) => void chooseResult(i, r, true)}
+                onEdit={(r, i) => void editResultImage(r, i)}
               />
             </div>
           ) : view === "canvas" &&

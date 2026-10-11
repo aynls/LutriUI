@@ -15,11 +15,14 @@ use std::collections::BTreeMap;
 use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
+use uuid::Uuid;
 
 const MAX_PAGE: u64 = 120;
 const MAX_TAG_LEN: usize = 64;
 const MAX_TAGS: usize = 64;
 const MAX_NAME_LEN: usize = 240;
+const MAX_BOARD_NAME: usize = 80;
+const MAX_BOARDS: i64 = 100;
 
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -50,7 +53,7 @@ pub struct GalleryItem {
     pub details: Option<GenerationDetails>,
     pub file_path: String,
     pub byte_size: u64,
-    pub favorite: bool,
+    pub board_ids: Vec<String>,
     pub tags: Vec<String>,
     pub availability: String,
     pub pending_delete: bool,
@@ -67,7 +70,7 @@ pub struct GalleryQuery {
     pub tag: Option<String>,
     pub created_from: Option<u64>,
     pub created_until: Option<u64>,
-    pub favorite: Option<bool>,
+    pub board_id: Option<String>,
     pub availability: String,
     pub sort: String,
     pub offset: u64,
@@ -83,7 +86,7 @@ impl Default for GalleryQuery {
             tag: None,
             created_from: None,
             created_until: None,
-            favorite: None,
+            board_id: None,
             availability: "all".into(),
             sort: "newest".into(),
             offset: 0,
@@ -112,9 +115,17 @@ pub struct GalleryFacets {
 #[serde(rename_all = "camelCase")]
 pub struct GalleryPatch {
     pub name: Option<String>,
-    pub favorite: Option<bool>,
     pub add_tags: Option<Vec<String>>,
     pub remove_tags: Option<Vec<String>>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Board {
+    pub id: String,
+    pub name: String,
+    pub created_at: u64,
+    pub asset_count: u64,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -137,7 +148,6 @@ pub struct GalleryBatchResult {
 pub struct LibraryStats {
     pub total_count: u64,
     pub missing_count: u64,
-    pub favorite_count: u64,
     pub pending_delete_count: u64,
     pub original_bytes: u64,
     pub thumbnail_bytes: u64,
@@ -194,11 +204,50 @@ fn normalize_tag(tag: &str) -> Result<String, String> {
     Ok(tag)
 }
 
+fn normalize_board_name(name: &str) -> Result<String, String> {
+    let name = name.trim().to_string();
+    if name.is_empty() || name.chars().count() > MAX_BOARD_NAME {
+        return Err(invalid("board name must be 1-80 characters"));
+    }
+    Ok(name)
+}
+
+fn board_missing() -> String {
+    String::from(ProviderError::coded(
+        "backend_board_gone",
+        "The board was removed",
+    ))
+}
+
+fn load_board(conn: &rusqlite::Connection, id: &str) -> Result<Option<Board>, String> {
+    conn.query_row(
+        r#"
+SELECT b.id, b.name, b.created_at,
+    (SELECT COUNT(*) FROM board_assets a
+     INNER JOIN assets s ON s.id = a.asset_id
+     WHERE a.board_id = b.id AND s.pending_delete = 0) AS asset_count
+FROM boards b WHERE b.id = ?1
+"#,
+        [id],
+        |r| {
+            Ok(Board {
+                id: r.get(0)?,
+                name: r.get(1)?,
+                created_at: r.get::<_, i64>(2)? as u64,
+                asset_count: r.get::<_, i64>(3)? as u64,
+            })
+        },
+    )
+    .optional()
+    .map_err(|e| db_failed("lookup board", e))
+}
+
 fn item_from_row(root: &Path, row: &Row) -> Result<GalleryItem, rusqlite::Error> {
     let id: String = row.get(0)?;
     let mime: String = row.get(5)?;
     let details_json: Option<String> = row.get(11)?;
-    let tags_json: String = row.get(18)?;
+    let tags_json: String = row.get(17)?;
+    let board_ids_json: String = row.get(18)?;
     Ok(GalleryItem {
         file_path: root
             .join("gallery")
@@ -220,13 +269,19 @@ fn item_from_row(root: &Path, row: &Row) -> Result<GalleryItem, rusqlite::Error>
         prompt: row.get(10)?,
         details: details_json.and_then(|d| serde_json::from_str(&d).ok()),
         byte_size: row.get::<_, i64>(12)? as u64,
-        favorite: row.get::<_, i64>(13)? != 0,
-        pending_delete: row.get::<_, i64>(14)? != 0,
-        availability: row.get(15)?,
-        thumbnail_revision: row.get::<_, i64>(16)? as u64,
-        has_thumbnail: row.get::<_, i64>(17)? != 0,
+        pending_delete: row.get::<_, i64>(13)? != 0,
+        availability: row.get(14)?,
+        thumbnail_revision: row.get::<_, i64>(15)? as u64,
+        has_thumbnail: row.get::<_, i64>(16)? != 0,
         tags: serde_json::from_str(&tags_json).unwrap_or_default(),
+        board_ids: serde_json::from_str(&board_ids_json).unwrap_or_default(),
     })
+}
+
+#[derive(Clone, Copy)]
+enum BoardMembership {
+    Add,
+    Remove,
 }
 
 impl LibraryStore {
@@ -366,6 +421,9 @@ impl LibraryStore {
             Some(tag) => Some(normalize_tag(tag)?),
             None => None,
         };
+        if let Some(board_id) = &query.board_id {
+            crate::library::validate_id(board_id)?;
+        }
         let filter: Vec<Value> = vec![
             Value::Text(query.search.trim().to_lowercase()),
             Value::Text(query.source.clone()),
@@ -379,11 +437,12 @@ impl LibraryStore {
                 .created_until
                 .map(|v| Value::Integer(v as i64))
                 .unwrap_or(Value::Null),
-            query
-                .favorite
-                .map(|v| Value::Integer(v as i64))
-                .unwrap_or(Value::Null),
             Value::Text(query.availability.clone()),
+            query
+                .board_id
+                .clone()
+                .map(Value::Text)
+                .unwrap_or(Value::Null),
         ];
         let total: u64 = self
             .conn
@@ -558,11 +617,7 @@ impl LibraryStore {
         patch: GalleryPatch,
     ) -> Result<Vec<GalleryItem>, String> {
         validate_mutation_ids(ids)?;
-        if patch.name.is_none()
-            && patch.favorite.is_none()
-            && patch.add_tags.is_none()
-            && patch.remove_tags.is_none()
-        {
+        if patch.name.is_none() && patch.add_tags.is_none() && patch.remove_tags.is_none() {
             return Err(invalid("empty patch"));
         }
         let name = patch
@@ -643,16 +698,6 @@ impl LibraryStore {
                     ]),
                 )
                 .map_err(|e| db_failed("rename image", e))?;
-            }
-            if let Some(favorite) = patch.favorite {
-                tx.execute(
-                    library_sql::FAVORITE,
-                    params_from_iter([
-                        Value::Text(item.id.clone()),
-                        Value::Integer(favorite as i64),
-                    ]),
-                )
-                .map_err(|e| db_failed("update image", e))?;
             }
             for tag in &add {
                 tx.execute(
@@ -789,6 +834,256 @@ impl LibraryStore {
         Ok(result)
     }
 
+    pub fn board_list(&self) -> Result<Vec<Board>, String> {
+        let mut stmt = self
+            .conn
+            .prepare(
+                r#"
+SELECT b.id, b.name, b.created_at,
+    (SELECT COUNT(*) FROM board_assets a
+     INNER JOIN assets s ON s.id = a.asset_id
+     WHERE a.board_id = b.id AND s.pending_delete = 0) AS asset_count
+FROM boards b
+ORDER BY b.sort_order ASC, b.created_at ASC, b.id ASC
+"#,
+            )
+            .map_err(|e| db_failed("list boards", e))?;
+        let boards = stmt
+            .query_map([], |r| {
+                Ok(Board {
+                    id: r.get(0)?,
+                    name: r.get(1)?,
+                    created_at: r.get::<_, i64>(2)? as u64,
+                    asset_count: r.get::<_, i64>(3)? as u64,
+                })
+            })
+            .map_err(|e| db_failed("list boards", e))?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|e| db_failed("list boards", e))?;
+        Ok(boards)
+    }
+
+    pub fn board_create(&mut self, name: &str) -> Result<Board, String> {
+        let name = normalize_board_name(name)?;
+        let count: i64 = self
+            .conn
+            .query_row("SELECT COUNT(*) FROM boards", [], |r| r.get(0))
+            .map_err(|e| db_failed("count boards", e))?;
+        if count >= MAX_BOARDS {
+            return Err(invalid("too many boards"));
+        }
+        let id = Uuid::new_v4().to_string();
+        let sort: i64 = self
+            .conn
+            .query_row(
+                "SELECT COALESCE(MAX(sort_order), -1) + 1 FROM boards",
+                [],
+                |r| r.get(0),
+            )
+            .map_err(|e| db_failed("order boards", e))?;
+        self.conn
+            .execute(
+                library_sql::BOARD_INSERT,
+                params_from_iter([
+                    Value::Text(id.clone()),
+                    Value::Text(name),
+                    Value::Integer(now_ms() as i64),
+                    Value::Integer(sort),
+                ]),
+            )
+            .map_err(|e| db_failed("create board", e))?;
+        load_board(&self.conn, &id)?.ok_or_else(|| invalid("board missing after create"))
+    }
+
+    pub fn board_rename(&mut self, id: &str, name: &str) -> Result<Board, String> {
+        crate::library::validate_id(id)?;
+        let name = normalize_board_name(name)?;
+        let changed = self
+            .conn
+            .execute(
+                library_sql::BOARD_RENAME,
+                params_from_iter([Value::Text(id.to_string()), Value::Text(name)]),
+            )
+            .map_err(|e| db_failed("rename board", e))?;
+        if changed == 0 {
+            return Err(board_missing());
+        }
+        load_board(&self.conn, id)?.ok_or_else(board_missing)
+    }
+
+    pub fn board_delete(&mut self, id: &str) -> Result<(), String> {
+        crate::library::validate_id(id)?;
+        let changed = self
+            .conn
+            .execute(library_sql::BOARD_DELETE, [id])
+            .map_err(|e| db_failed("delete board", e))?;
+        if changed == 0 {
+            return Err(board_missing());
+        }
+        Ok(())
+    }
+
+    pub fn board_add(
+        &mut self,
+        board_id: &str,
+        ids: &[String],
+    ) -> Result<GalleryBatchResult, String> {
+        self.mutate_board_membership(board_id, ids, BoardMembership::Add)
+    }
+
+    pub fn board_remove(
+        &mut self,
+        board_id: &str,
+        ids: &[String],
+    ) -> Result<GalleryBatchResult, String> {
+        self.mutate_board_membership(board_id, ids, BoardMembership::Remove)
+    }
+
+    pub fn board_move(
+        &mut self,
+        from_board_id: &str,
+        to_board_id: &str,
+        ids: &[String],
+    ) -> Result<GalleryBatchResult, String> {
+        crate::library::validate_id(from_board_id)?;
+        crate::library::validate_id(to_board_id)?;
+        if from_board_id == to_board_id {
+            return Err(invalid("move needs two different boards"));
+        }
+        validate_mutation_ids(ids)?;
+        if load_board(&self.conn, from_board_id)?.is_none()
+            || load_board(&self.conn, to_board_id)?.is_none()
+        {
+            return Err(board_missing());
+        }
+        let root = self.root.clone();
+        let mut result = GalleryBatchResult::default();
+        let tx = self
+            .conn
+            .transaction()
+            .map_err(|e| db_failed("move board images", e))?;
+        for id in ids {
+            let step = (|| -> Result<(), String> {
+                let item = tx
+                    .query_row(
+                        &format!(
+                            "SELECT {} {}",
+                            library_sql::ASSET_COLUMNS,
+                            library_sql::ASSET_BY_ID
+                        ),
+                        [id],
+                        |r| item_from_row(&root, r),
+                    )
+                    .optional()
+                    .map_err(|e| db_failed("lookup image", e))?;
+                match item {
+                    Some(item) if !item.pending_delete => {}
+                    _ => return Err(gone()),
+                };
+                tx.execute(
+                    library_sql::BOARD_ADD_ASSET,
+                    params_from_iter([
+                        Value::Text(to_board_id.to_string()),
+                        Value::Text(id.clone()),
+                        Value::Integer(now_ms() as i64),
+                    ]),
+                )
+                .map_err(|e| db_failed("add to board", e))?;
+                tx.execute(
+                    library_sql::BOARD_REMOVE_ASSET,
+                    params_from_iter([
+                        Value::Text(from_board_id.to_string()),
+                        Value::Text(id.clone()),
+                    ]),
+                )
+                .map_err(|e| db_failed("leave board", e))?;
+                Ok(())
+            })();
+            match step {
+                Ok(()) => result.succeeded.push(id.clone()),
+                Err(e) => result.failed.push(BatchFailure {
+                    id: id.clone(),
+                    message: e,
+                }),
+            }
+        }
+        tx.commit()
+            .map_err(|e| db_failed("move board images", e))?;
+        Ok(result)
+    }
+
+    fn mutate_board_membership(
+        &mut self,
+        board_id: &str,
+        ids: &[String],
+        op: BoardMembership,
+    ) -> Result<GalleryBatchResult, String> {
+        crate::library::validate_id(board_id)?;
+        validate_mutation_ids(ids)?;
+        if load_board(&self.conn, board_id)?.is_none() {
+            return Err(board_missing());
+        }
+        let root = self.root.clone();
+        let mut result = GalleryBatchResult::default();
+        let tx = self
+            .conn
+            .transaction()
+            .map_err(|e| db_failed("update board", e))?;
+        for id in ids {
+            let step = (|| -> Result<(), String> {
+                let item = tx
+                    .query_row(
+                        &format!(
+                            "SELECT {} {}",
+                            library_sql::ASSET_COLUMNS,
+                            library_sql::ASSET_BY_ID
+                        ),
+                        [id],
+                        |r| item_from_row(&root, r),
+                    )
+                    .optional()
+                    .map_err(|e| db_failed("lookup image", e))?;
+                match item {
+                    Some(item) if !item.pending_delete => {}
+                    _ => return Err(gone()),
+                };
+                match op {
+                    BoardMembership::Add => {
+                        tx.execute(
+                            library_sql::BOARD_ADD_ASSET,
+                            params_from_iter([
+                                Value::Text(board_id.to_string()),
+                                Value::Text(id.clone()),
+                                Value::Integer(now_ms() as i64),
+                            ]),
+                        )
+                        .map_err(|e| db_failed("add to board", e))?;
+                    }
+                    BoardMembership::Remove => {
+                        tx.execute(
+                            library_sql::BOARD_REMOVE_ASSET,
+                            params_from_iter([
+                                Value::Text(board_id.to_string()),
+                                Value::Text(id.clone()),
+                            ]),
+                        )
+                        .map_err(|e| db_failed("leave board", e))?;
+                    }
+                }
+                Ok(())
+            })();
+            match step {
+                Ok(()) => result.succeeded.push(id.clone()),
+                Err(e) => result.failed.push(BatchFailure {
+                    id: id.clone(),
+                    message: e,
+                }),
+            }
+        }
+        tx.commit().map_err(|e| db_failed("update board", e))?;
+        Ok(result)
+    }
+
     pub fn thumbnail(&self, id: &str) -> Result<Option<Vec<u8>>, String> {
         crate::library::validate_id(id)?;
         self.conn
@@ -809,7 +1104,6 @@ impl LibraryStore {
         let (
             total_count,
             missing_count,
-            favorite_count,
             pending_delete_count,
             original_bytes,
             thumbnail_bytes,
@@ -821,11 +1115,10 @@ impl LibraryStore {
                     r.get::<_, i64>(0)?,
                     r.get::<_, i64>(1)?,
                     r.get::<_, i64>(2)?,
-                    r.get::<_, i64>(3)?,
+                    r.get::<_, Option<i64>>(3)?,
                     r.get::<_, Option<i64>>(4)?,
-                    r.get::<_, Option<i64>>(5)?,
-                    r.get::<_, i64>(6)?,
-                    r.get::<_, Option<String>>(7)?,
+                    r.get::<_, i64>(5)?,
+                    r.get::<_, Option<String>>(6)?,
                 ))
             })
             .map_err(|e| db_failed("measure library", e))?;
@@ -848,7 +1141,6 @@ impl LibraryStore {
         Ok(LibraryStats {
             total_count: total_count as u64,
             missing_count: missing_count as u64,
-            favorite_count: favorite_count as u64,
             pending_delete_count: pending_delete_count as u64,
             original_bytes: original_bytes.unwrap_or(0) as u64,
             thumbnail_bytes: thumbnail_bytes.unwrap_or(0) as u64,
@@ -1157,6 +1449,134 @@ pub(crate) mod tests {
             std::fs::read(dir.join(crate::library::DB_FILE)).unwrap(),
             garbage
         );
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    fn has_favorite_column(store: &LibraryStore) -> bool {
+        let mut stmt = store.conn.prepare("PRAGMA table_info(assets)").unwrap();
+        let names: Vec<String> = stmt
+            .query_map([], |r| r.get::<_, String>(1))
+            .unwrap()
+            .map(|name| name.unwrap())
+            .collect();
+        names.iter().any(|name| name == "favorite")
+    }
+
+    fn add_legacy_favorite_column(store: &LibraryStore) {
+        store
+            .conn
+            .execute_batch(
+                "ALTER TABLE assets ADD COLUMN favorite INTEGER NOT NULL DEFAULT 0;
+                 CREATE INDEX IF NOT EXISTS assets_favorite_date ON assets(favorite, created_at DESC, id DESC);",
+            )
+            .unwrap();
+    }
+
+    #[test]
+    fn boards_hold_and_move_assets() {
+        let dir = temp();
+        let mut store = LibraryStore::new(dir.clone()).unwrap();
+        let a = store.gallery_import(&png(), "a", "file").unwrap();
+        let b = store.gallery_import(&png(), "b", "file").unwrap();
+        assert!(store.board_list().unwrap().is_empty());
+        let board = store.board_create("Looks").unwrap();
+        store.board_add(&board.id, &[a.id.clone()]).unwrap();
+        let listed = store.board_list().unwrap();
+        assert_eq!(listed[0].name, "Looks");
+        assert_eq!(listed[0].asset_count, 1);
+        let page = store
+            .gallery_query(GalleryQuery {
+                board_id: Some(board.id.clone()),
+                ..query_all()
+            })
+            .unwrap();
+        assert_eq!(page.total, 1);
+        assert_eq!(page.items[0].id, a.id);
+        assert_eq!(page.items[0].board_ids, vec![board.id.clone()]);
+        store.board_add(&board.id, &[b.id.clone()]).unwrap();
+        let other = store.board_create("Keep").unwrap();
+        store
+            .board_move(&board.id, &other.id, &[a.id.clone()])
+            .unwrap();
+        let looks = store
+            .gallery_query(GalleryQuery {
+                board_id: Some(board.id.clone()),
+                ..query_all()
+            })
+            .unwrap();
+        assert_eq!(looks.total, 1);
+        assert_eq!(looks.items[0].id, b.id);
+        store.board_remove(&other.id, &[a.id.clone()]).unwrap();
+        let a = store.find_asset(&a.id).unwrap().unwrap();
+        assert!(a.board_ids.is_empty());
+        store.board_rename(&other.id, "Kept").unwrap();
+        store.board_delete(&board.id).unwrap();
+        assert_eq!(store.board_list().unwrap().len(), 1);
+        drop(store);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn v1_libraries_gain_empty_boards_without_importing_stars() {
+        let dir = temp();
+        let mut store = LibraryStore::new(dir.clone()).unwrap();
+        let kept = store.gallery_import(&png(), "kept", "file").unwrap();
+        store
+            .conn
+            .execute_batch("DROP TABLE board_assets; DROP TABLE boards;")
+            .unwrap();
+        add_legacy_favorite_column(&store);
+        store
+            .conn
+            .execute("UPDATE assets SET favorite = 1 WHERE id = ?1", [&kept.id])
+            .unwrap();
+        store
+            .conn
+            .execute_batch("PRAGMA user_version = 1;")
+            .unwrap();
+        drop(store);
+        let store = LibraryStore::new(dir.clone()).unwrap();
+        let version: i64 = store
+            .conn
+            .query_row("PRAGMA user_version", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(version, 3);
+        assert!(store.board_list().unwrap().is_empty());
+        assert!(!has_favorite_column(&store));
+        assert!(store.find_asset(&kept.id).unwrap().is_some());
+        drop(store);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn v2_libraries_drop_favorite_and_keep_boards() {
+        let dir = temp();
+        let mut store = LibraryStore::new(dir.clone()).unwrap();
+        let asset = store.gallery_import(&png(), "kept", "file").unwrap();
+        let board = store.board_create("Looks").unwrap();
+        store.board_add(&board.id, &[asset.id.clone()]).unwrap();
+        add_legacy_favorite_column(&store);
+        store
+            .conn
+            .execute("UPDATE assets SET favorite = 1 WHERE id = ?1", [&asset.id])
+            .unwrap();
+        store
+            .conn
+            .execute_batch("PRAGMA user_version = 2;")
+            .unwrap();
+        drop(store);
+        let store = LibraryStore::new(dir.clone()).unwrap();
+        let version: i64 = store
+            .conn
+            .query_row("PRAGMA user_version", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(version, 3);
+        assert!(!has_favorite_column(&store));
+        let boards = store.board_list().unwrap();
+        assert_eq!(boards.len(), 1);
+        assert_eq!(boards[0].name, "Looks");
+        assert_eq!(boards[0].asset_count, 1);
+        drop(store);
         std::fs::remove_dir_all(dir).unwrap();
     }
 }

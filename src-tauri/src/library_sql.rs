@@ -26,7 +26,6 @@ CREATE TABLE IF NOT EXISTS assets (
     prompt TEXT NOT NULL DEFAULT '',
     details_json TEXT CHECK(details_json IS NULL OR json_valid(details_json)),
     byte_size INTEGER NOT NULL CHECK(byte_size >= 0),
-    favorite INTEGER NOT NULL DEFAULT 0 CHECK(favorite IN (0,1)),
     pending_delete INTEGER NOT NULL DEFAULT 0 CHECK(pending_delete IN (0,1)),
     availability TEXT NOT NULL DEFAULT 'available' CHECK(availability IN ('available','missing')),
     search_text TEXT NOT NULL,
@@ -36,7 +35,6 @@ CREATE TABLE IF NOT EXISTS assets (
 CREATE INDEX IF NOT EXISTS assets_date ON assets(created_at DESC, id DESC);
 CREATE INDEX IF NOT EXISTS assets_model_date ON assets(model, created_at DESC, id DESC);
 CREATE INDEX IF NOT EXISTS assets_source_date ON assets(source, created_at DESC, id DESC);
-CREATE INDEX IF NOT EXISTS assets_favorite_date ON assets(favorite, created_at DESC, id DESC);
 CREATE INDEX IF NOT EXISTS assets_availability ON assets(availability, pending_delete);
 CREATE TABLE IF NOT EXISTS asset_tags (
     asset_id TEXT NOT NULL REFERENCES assets(id) ON DELETE CASCADE,
@@ -64,20 +62,58 @@ CREATE TABLE IF NOT EXISTS library_meta (
     key TEXT PRIMARY KEY,
     value TEXT NOT NULL
 );
-PRAGMA user_version = 1;
+CREATE TABLE IF NOT EXISTS boards (
+    id TEXT PRIMARY KEY,
+    name TEXT NOT NULL CHECK(length(name) BETWEEN 1 AND 80),
+    created_at INTEGER NOT NULL,
+    sort_order INTEGER NOT NULL DEFAULT 0
+);
+CREATE INDEX IF NOT EXISTS boards_order ON boards(sort_order ASC, created_at ASC, id ASC);
+CREATE TABLE IF NOT EXISTS board_assets (
+    board_id TEXT NOT NULL REFERENCES boards(id) ON DELETE CASCADE,
+    asset_id TEXT NOT NULL REFERENCES assets(id) ON DELETE CASCADE,
+    added_at INTEGER NOT NULL,
+    PRIMARY KEY(board_id, asset_id)
+);
+CREATE INDEX IF NOT EXISTS board_assets_asset ON board_assets(asset_id, board_id);
+CREATE INDEX IF NOT EXISTS board_assets_board_added ON board_assets(board_id, added_at DESC, asset_id DESC);
+PRAGMA user_version = 3;
+"#;
+
+/// Applied to user_version 1 (and leftover 2) libraries. New libraries get the
+/// same tables from SCHEMA. Starred assets are not copied into any board.
+pub const BOARDS_SCHEMA: &str = r#"
+CREATE TABLE IF NOT EXISTS boards (
+    id TEXT PRIMARY KEY,
+    name TEXT NOT NULL CHECK(length(name) BETWEEN 1 AND 80),
+    created_at INTEGER NOT NULL,
+    sort_order INTEGER NOT NULL DEFAULT 0
+);
+CREATE INDEX IF NOT EXISTS boards_order ON boards(sort_order ASC, created_at ASC, id ASC);
+CREATE TABLE IF NOT EXISTS board_assets (
+    board_id TEXT NOT NULL REFERENCES boards(id) ON DELETE CASCADE,
+    asset_id TEXT NOT NULL REFERENCES assets(id) ON DELETE CASCADE,
+    added_at INTEGER NOT NULL,
+    PRIMARY KEY(board_id, asset_id)
+);
+CREATE INDEX IF NOT EXISTS board_assets_asset ON board_assets(asset_id, board_id);
+CREATE INDEX IF NOT EXISTS board_assets_board_added ON board_assets(board_id, added_at DESC, asset_id DESC);
 "#;
 
 pub const ASSET_COLUMNS: &str = r#"
 a.id, a.name, a.created_at, a.width, a.height, a.mime, a.source,
 a.history_id, a.model, a.provider, a.prompt, a.details_json, a.byte_size,
-a.favorite, a.pending_delete, a.availability, a.thumbnail_revision,
+a.pending_delete, a.availability, a.thumbnail_revision,
 (a.thumbnail IS NOT NULL) AS has_thumbnail,
 COALESCE((SELECT json_group_array(t.tag) FROM
-    (SELECT tag FROM asset_tags WHERE asset_id = a.id ORDER BY tag) t), '[]') AS tags_json
+    (SELECT tag FROM asset_tags WHERE asset_id = a.id ORDER BY tag) t), '[]') AS tags_json,
+COALESCE((SELECT json_group_array(b.board_id) FROM
+    (SELECT board_id FROM board_assets WHERE asset_id = a.id ORDER BY added_at, board_id) b), '[]') AS board_ids_json
 "#;
 
 // Bind in order: normalized search, source, model, normalized tag, fromMs inclusive,
-// untilMs exclusive, optional favorite, availability. Count and page MUST share this clause.
+// untilMs exclusive, availability, optional board id.
+// Count and page MUST share this clause. Page uses ?9 / ?10.
 pub const ASSET_FILTER: &str = r#"
 FROM assets a
 WHERE (?1 = '' OR instr(a.search_text, ?1) > 0 OR EXISTS (
@@ -88,10 +124,12 @@ AND (?3 IS NULL OR a.model = ?3)
 AND (?4 IS NULL OR EXISTS (SELECT 1 FROM asset_tags t WHERE t.asset_id = a.id AND t.tag = ?4))
 AND (?5 IS NULL OR a.created_at >= ?5)
 AND (?6 IS NULL OR a.created_at < ?6)
-AND (?7 IS NULL OR a.favorite = ?7)
-AND (?8 = 'all'
-    OR (?8 = 'pending' AND a.pending_delete = 1)
-    OR (?8 IN ('available','missing') AND a.pending_delete = 0 AND a.availability = ?8))
+AND (?7 = 'all'
+    OR (?7 = 'pending' AND a.pending_delete = 1)
+    OR (?7 IN ('available','missing') AND a.pending_delete = 0 AND a.availability = ?7))
+AND (?8 IS NULL OR EXISTS (
+    SELECT 1 FROM board_assets b WHERE b.asset_id = a.id AND b.board_id = ?8
+))
 "#;
 
 pub const ORDER_NEWEST: &str = " ORDER BY a.created_at DESC, a.id DESC";
@@ -99,6 +137,14 @@ pub const ORDER_OLDEST: &str = " ORDER BY a.created_at ASC, a.id ASC";
 pub const ORDER_NAME: &str = " ORDER BY a.name COLLATE NOCASE ASC, a.id ASC";
 pub const ORDER_SIZE: &str = " ORDER BY a.byte_size DESC, a.id DESC";
 pub const PAGE: &str = " LIMIT ?9 OFFSET ?10";
+pub const BOARD_INSERT: &str =
+    "INSERT INTO boards(id, name, created_at, sort_order) VALUES (?1, ?2, ?3, ?4)";
+pub const BOARD_RENAME: &str = "UPDATE boards SET name = ?2 WHERE id = ?1";
+pub const BOARD_DELETE: &str = "DELETE FROM boards WHERE id = ?1";
+pub const BOARD_ADD_ASSET: &str =
+    "INSERT OR IGNORE INTO board_assets(board_id, asset_id, added_at) VALUES (?1, ?2, ?3)";
+pub const BOARD_REMOVE_ASSET: &str =
+    "DELETE FROM board_assets WHERE board_id = ?1 AND asset_id = ?2";
 pub const ASSET_BY_ID: &str = " FROM assets a WHERE a.id = ?1";
 pub const ALL_ASSETS: &str = " FROM assets a ORDER BY a.created_at DESC, a.id DESC";
 pub const TAGS: &str = "SELECT DISTINCT tag FROM asset_tags ORDER BY tag";
@@ -115,7 +161,6 @@ INSERT INTO assets(
 "#;
 pub const RENAME: &str =
     "UPDATE assets SET name = ?2, search_text = ?3 WHERE id = ?1 AND pending_delete = 0";
-pub const FAVORITE: &str = "UPDATE assets SET favorite = ?2 WHERE id = ?1 AND pending_delete = 0";
 pub const ADD_TAG: &str = "INSERT OR IGNORE INTO asset_tags(asset_id, tag) VALUES (?1, ?2)";
 pub const REMOVE_TAG: &str = "DELETE FROM asset_tags WHERE asset_id = ?1 AND tag = ?2";
 pub const MARK_DELETE: &str = "UPDATE assets SET pending_delete = 1 WHERE id = ?1";
@@ -166,7 +211,6 @@ pub const STATS: &str = r#"
 SELECT
     COUNT(CASE WHEN pending_delete = 0 THEN 1 END) AS total_count,
     COUNT(CASE WHEN pending_delete = 0 AND availability = 'missing' THEN 1 END) AS missing_count,
-    COUNT(CASE WHEN pending_delete = 0 AND favorite = 1 THEN 1 END) AS favorite_count,
     COUNT(CASE WHEN pending_delete = 1 THEN 1 END) AS pending_delete_count,
     COALESCE(SUM(CASE WHEN pending_delete = 0 AND availability = 'available' THEN byte_size ELSE 0 END), 0) AS original_bytes,
     COALESCE(SUM(length(thumbnail)), 0) AS thumbnail_bytes,
