@@ -184,6 +184,16 @@ async fn missing_or_rejected_key_is_a_clear_error() {
 }
 
 #[tokio::test]
+async fn optimize_distinguishes_missing_completions_route() {
+    let (url, handle) = server(vec![(404, json!({"error":{"message":"nope"}}))]);
+    let err = optimize_with(&settings(&url), "k", "flux", "context")
+        .await
+        .unwrap_err();
+    assert_eq!(err.code, "backend_llm_no_completions");
+    handle.join().unwrap();
+}
+
+#[tokio::test]
 async fn connection_check_hits_models_not_image_generate() {
     let (url, handle) = server(vec![(200, json!({"data":[{"id":"demo-model"}]}))]);
     check_with(&settings(&url), "test-only-key").await.unwrap();

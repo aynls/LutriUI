@@ -256,7 +256,9 @@ export default function App() {
     refreshHistory,
     showNotice,
   );
-  const generationTask = generation.task;
+  const generationTask =
+    generation.tasks.find((t) => (t.intent ?? "create") === intent) ??
+    generation.task;
   const busy = generation.tasks.length > 0;
   const storageBusy =
     !ready ||
@@ -1124,6 +1126,14 @@ export default function App() {
               }
               generationTask={generationTask}
               onStopRemaining={() => generation.stopRemaining()}
+              onCancelGeneration={() =>
+                generationTask && generation.cancel(generationTask.id)
+              }
+              generationFailure={
+                generation.failure?.intent === intent
+                  ? generation.failure
+                  : null
+              }
               sentRequestId={
                 requestFeedback?.key === activeKey
                   ? requestFeedback.id
@@ -1151,7 +1161,7 @@ export default function App() {
               <HistoryPanel
                 saveDirectory={prefs.saveDirectory}
                 items={history}
-                onCancel={(id) => generation.stopRemaining(id)}
+                onCancel={(id) => generation.cancel(id)}
                 onRefresh={() => void refreshHistory()}
                 onUseAsInput={(item) => void historyAsInput(item)}
                 onRestoreEdit={(item) => void restoreHistory(item)}
@@ -1351,13 +1361,12 @@ export default function App() {
               {generationTask.stopRequested ? (
                 <span>{m.tasks_stopped()}</span>
               ) : (
-                (generationTask.remainingRequests ?? 0) > 0 && (
-                  <button
-                    onClick={() => generation.stopRemaining(generationTask.id)}
-                  >
-                    {m.tasks_stop()}
-                  </button>
-                )
+                <button
+                  type="button"
+                  onClick={() => generation.cancel(generationTask.id)}
+                >
+                  {m.action_cancel()}
+                </button>
               )}
               <button
                 onClick={() => {

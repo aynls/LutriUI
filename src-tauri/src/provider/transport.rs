@@ -57,19 +57,49 @@ async fn json_with_retry_after(
     let (status, body, retry_after, _) = json_with_metadata(request, provider).await?;
     Ok((status, body, retry_after))
 }
+pub fn send_failed(err: reqwest::Error, provider: &str) -> ProviderError {
+    let (code, message) = if err.is_timeout() {
+        (
+            "backend_network_timeout",
+            format!("{provider} timed out waiting for a response"),
+        )
+    } else {
+        (
+            "backend_network_failed",
+            format!("{provider} network request failed"),
+        )
+    };
+    ProviderError::coded(code, message)
+        .with_param("provider", provider)
+        .with_hint("The task may already have been accepted. The paid request will not be submitted again.")
+        .with_hint_code("backend_network_maybe_accepted")
+}
+
+pub fn http_failed(status: u16, provider: &str, upstream: Option<&str>) -> ProviderError {
+    if status == 401 || status == 403 {
+        return ProviderError::coded(
+            "backend_provider_unauthorized",
+            format!("{provider} rejected the API key"),
+        )
+        .with_param("provider", provider)
+        .with_status(status);
+    }
+    match upstream {
+        Some(message) => ProviderError::http(status, format!("{provider}: {message}")),
+        None => ProviderError::coded(
+            "backend_request_failed",
+            format!("{provider}: The request failed"),
+        )
+        .with_param("provider", provider)
+        .with_status(status),
+    }
+}
+
 pub async fn json_with_metadata(
     request: reqwest::RequestBuilder,
     provider: &str,
 ) -> Result<(u16, Value, Option<Duration>, Option<f64>), ProviderError> {
-    let response = request.send().await.map_err(|_| {
-        ProviderError::coded(
-            "backend_network_failed",
-            format!("{provider} network request failed"),
-        )
-        .with_param("provider", provider)
-        .with_hint("The task may already have been accepted. The paid request will not be submitted again.")
-        .with_hint_code("backend_network_maybe_accepted")
-    })?;
+    let response = request.send().await.map_err(|err| send_failed(err, provider))?;
     let status = response.status().as_u16();
     let credits = response
         .headers()
@@ -97,15 +127,7 @@ pub async fn json_with_metadata(
             .or_else(|| body.get("message"))
             .or_else(|| body.get("detail"))
             .and_then(Value::as_str);
-        return Err(match upstream {
-            Some(message) => ProviderError::http(status, format!("{provider}: {message}")),
-            None => ProviderError::coded(
-                "backend_request_failed",
-                format!("{provider}: The request failed"),
-            )
-            .with_param("provider", provider)
-            .with_status(status),
-        });
+        return Err(http_failed(status, provider, upstream));
     }
     Ok((status, body, retry_after, credits))
 }
@@ -230,4 +252,23 @@ pub async fn openai_images(
         ));
     }
     Ok(images)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn http_failed_distinguishes_auth_from_other_status() {
+        assert_eq!(
+            http_failed(401, "bfl", None).code,
+            "backend_provider_unauthorized"
+        );
+        assert_eq!(
+            http_failed(403, "runware", Some("nope")).code,
+            "backend_provider_unauthorized"
+        );
+        assert_eq!(http_failed(500, "bfl", None).code, "backend_request_failed");
+        assert!(http_failed(502, "comfy", Some("upstream")).code.is_empty());
+    }
 }

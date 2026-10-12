@@ -374,10 +374,30 @@ pub async fn llm_check() -> Result<String, String> {
 }
 
 #[tauri::command]
-pub async fn prompt_optimize(family: String, user_content: String) -> Result<String, String> {
-    crate::llm::optimize(family, user_content)
-        .await
-        .map_err(Into::into)
+pub async fn prompt_optimize(
+    state: State<'_, AppState>,
+    family: String,
+    user_content: String,
+    request_id: String,
+) -> Result<String, String> {
+    let token = state.cancels.register(&request_id);
+    let result = crate::cancel::run_cancellable(
+        token,
+        crate::llm::cancelled(),
+        crate::llm::optimize(family, user_content),
+    )
+    .await;
+    state.cancels.finish(&request_id);
+    result.map_err(Into::into)
+}
+
+#[tauri::command]
+pub async fn prompt_optimize_cancel(
+    state: State<'_, AppState>,
+    request_id: String,
+) -> Result<(), String> {
+    state.cancels.cancel(&request_id);
+    Ok(())
 }
 
 #[tauri::command]
@@ -589,6 +609,10 @@ pub async fn generate(
     let _generation = state.gate.generation()?;
     let request_id = request.request_id.clone();
     let history_id = request.history_id.clone().or_else(|| request_id.clone());
+    let cancel_id = request_id
+        .clone()
+        .filter(|id| !id.is_empty())
+        .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
     let reporter: crate::provider::progress::Reporter = std::sync::Arc::new(
         move |phase, task_id, completed, status| {
             if let Some(id) = history_id.as_deref() {
@@ -601,12 +625,24 @@ pub async fn generate(
             let _ = app.emit("generation-progress", serde_json::json!({"requestId": request_id, "phase": phase, "taskId": task_id, "completed": completed, "status": status}));
         },
     );
-    crate::provider::progress::with_reporter(reporter, async {
-        crate::provider::progress::report("submitting", None, None, None);
-        crate::provider::dispatch(&request).await
-    })
-    .await
-    .map_err(|e| e.to_json())
+    let token = state.cancels.register(&cancel_id);
+    let result = crate::cancel::run_cancellable(
+        token,
+        crate::cancel::cancelled("backend_generation_cancelled", "Cancelled"),
+        crate::provider::progress::with_reporter(reporter, async {
+            crate::provider::progress::report("submitting", None, None, None);
+            crate::provider::dispatch(&request).await
+        }),
+    )
+    .await;
+    state.cancels.finish(&cancel_id);
+    result.map_err(|e| e.to_json())
+}
+
+#[tauri::command]
+pub async fn generate_cancel(state: State<'_, AppState>, request_id: String) -> Result<(), String> {
+    state.cancels.cancel(&request_id);
+    Ok(())
 }
 
 const MAX_IMPORT_BYTES: u64 = 64 * 1024 * 1024;

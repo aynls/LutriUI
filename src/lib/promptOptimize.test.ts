@@ -5,6 +5,9 @@ import type { Draft } from "./types";
 import {
   DEFAULT_LLM_MODEL,
   draftWithOptimizedPrompt,
+  llmFailureKind,
+  optimizeNeedsSettings,
+  takeOptimizedPrompt,
   familyTemplate,
   genericTemplate,
   optimizeChatMessages,
@@ -134,4 +137,31 @@ test("optimized prompt replaces text only while the workspace version matches", 
   expect(() =>
     draftWithOptimizedPrompt(live, "inst:2", "inst:1", "rewritten"),
   ).toThrow();
+});
+
+test("cancelled optimize does not overwrite the prompt even when versions match", () => {
+  const live = draft();
+  expect(
+    takeOptimizedPrompt(true, live, "inst:1", "inst:1", "rewritten"),
+  ).toBeNull();
+  expect(
+    takeOptimizedPrompt(false, live, "inst:1", "inst:1", "rewritten")?.prompt,
+  ).toBe("rewritten");
+});
+
+test("LLM failure codes distinguish auth, timeout, and endpoint", () => {
+  expect(llmFailureKind("backend_llm_unauthorized")).toBe("auth");
+  expect(llmFailureKind("backend_llm_key_missing")).toBe("auth");
+  expect(llmFailureKind("backend_provider_unauthorized")).toBe("auth");
+  expect(llmFailureKind("backend_llm_timeout")).toBe("timeout");
+  expect(llmFailureKind("backend_network_timeout")).toBe("timeout");
+  expect(llmFailureKind("backend_llm_network_failed")).toBe("endpoint");
+  expect(llmFailureKind("backend_llm_no_completions")).toBe("endpoint");
+  expect(llmFailureKind("backend_llm_check_no_models")).toBe("endpoint");
+  expect(llmFailureKind("backend_llm_check_network")).toBe("endpoint");
+  expect(llmFailureKind("backend_llm_empty_reply")).toBe("other");
+  expect(optimizeNeedsSettings("backend_llm_unauthorized")).toBe(true);
+  expect(optimizeNeedsSettings("backend_llm_timeout")).toBe(true);
+  expect(optimizeNeedsSettings("backend_llm_no_completions")).toBe(true);
+  expect(optimizeNeedsSettings("backend_llm_empty_reply")).toBe(false);
 });

@@ -286,6 +286,13 @@ fn http_error(status: u16, body: &Value) -> ProviderError {
     if status == 401 || status == 403 {
         return unauthorized(status);
     }
+    if matches!(status, 404 | 405 | 501) {
+        return coded(
+            "backend_llm_no_completions",
+            "This endpoint does not provide Chat Completions. Check the base URL.",
+        )
+        .with_status(status);
+    }
     let upstream = body
         .pointer("/error/message")
         .or_else(|| body.get("message"))
@@ -304,6 +311,26 @@ fn http_error(status: u16, body: &Value) -> ProviderError {
         .with_param("status", status)
         .with_status(status),
     }
+}
+
+/// Auth / timeout / endpoint for Chat Completions and GET /models, matching the Settings check.
+pub fn llm_network_error(
+    timeout: bool,
+    network_code: &str,
+    network_message: impl Into<String>,
+) -> ProviderError {
+    if timeout {
+        coded(
+            "backend_llm_timeout",
+            "The request timed out. Check the endpoint and try again.",
+        )
+    } else {
+        coded(network_code, network_message)
+    }
+}
+
+pub fn cancelled() -> ProviderError {
+    coded("backend_llm_cancelled", "Cancelled")
 }
 
 fn check_http_error(status: u16) -> ProviderError {
@@ -526,8 +553,9 @@ pub async fn optimize_with(
         .json(&chat_body(&model, family, user_content))
         .send()
         .await
-        .map_err(|_| {
-            coded(
+        .map_err(|err| {
+            llm_network_error(
+                err.is_timeout(),
                 "backend_llm_network_failed",
                 "Prompt optimize network request failed",
             )
@@ -556,8 +584,9 @@ pub async fn check_with(settings: &LlmSettings, key: &str) -> Result<(), Provide
         .bearer_auth(key.trim())
         .send()
         .await
-        .map_err(|_| {
-            coded(
+        .map_err(|err| {
+            llm_network_error(
+                err.is_timeout(),
                 "backend_llm_check_network",
                 "Couldn't reach the endpoint. Check the base URL and network.",
             )
@@ -726,7 +755,31 @@ mod tests {
         assert_eq!(check_http_error(500).code, "backend_llm_check_failed");
         assert_eq!(
             http_error(404, &Value::Null).code,
+            "backend_llm_no_completions"
+        );
+        assert_eq!(
+            http_error(405, &Value::Null).code,
+            "backend_llm_no_completions"
+        );
+        assert_eq!(
+            http_error(500, &Value::Null).code,
             "backend_llm_request_failed"
+        );
+    }
+
+    #[test]
+    fn send_errors_distinguish_timeout_from_endpoint() {
+        assert_eq!(
+            llm_network_error(true, "backend_llm_network_failed", "x").code,
+            "backend_llm_timeout"
+        );
+        assert_eq!(
+            llm_network_error(false, "backend_llm_network_failed", "x").code,
+            "backend_llm_network_failed"
+        );
+        assert_eq!(
+            llm_network_error(false, "backend_llm_check_network", "x").code,
+            "backend_llm_check_network"
         );
     }
 

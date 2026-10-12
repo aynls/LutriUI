@@ -1,3 +1,4 @@
+mod cancel;
 mod commands;
 mod gallery;
 mod history;
@@ -18,6 +19,7 @@ pub struct AppState {
     pub library: Mutex<Option<library::LibraryStore>>,
     pub gate: storage::StorageGate,
     pub mcp: std::sync::OnceLock<mcp::Mcp>,
+    pub cancels: cancel::InflightCancels,
 }
 
 impl AppState {
@@ -37,6 +39,7 @@ impl Default for AppState {
             library: Mutex::new(None),
             gate: storage::StorageGate::default(),
             mcp: std::sync::OnceLock::new(),
+            cancels: cancel::InflightCancels::default(),
         }
     }
 }
@@ -121,6 +124,7 @@ pub fn run() {
             commands::llm_credential_remove,
             commands::llm_check,
             commands::prompt_optimize,
+            commands::prompt_optimize_cancel,
             commands::draft_load,
             commands::draft_save,
             commands::import_url,
@@ -131,6 +135,7 @@ pub fn run() {
             commands::library_maintain,
             commands::library_stats,
             commands::generate,
+            commands::generate_cancel,
             commands::import_image,
             commands::save_data_url,
             commands::history_list,

@@ -1,5 +1,5 @@
 import { m } from "../i18n";
-import { generate } from "../lib/api";
+import { cancelledError, generate } from "../lib/api";
 import { downscaleDataUrl, imageSize } from "../lib/image";
 import { buildRequest } from "../models";
 import { fieldsFor } from "../models/catalog";
@@ -95,6 +95,7 @@ export async function executeGeneration(
   queued?: HistoryItem,
   requestId?: string,
   beforeSubmit?: () => Promise<void>,
+  signal?: AbortSignal,
 ): Promise<SavedResult> {
   onProgress?.({ phase: "preparing" });
   const images = await Promise.all(
@@ -116,7 +117,9 @@ export async function executeGeneration(
     request.historyId = queued.id;
   }
   await beforeSubmit?.();
-  const out = await generate(request, onProgress);
+  if (signal?.aborted) throw cancelledError();
+  const out = await generate(request, onProgress, signal);
+  if (signal?.aborted) throw cancelledError();
   if (!out.images[0]) throw new Error(m.error_no_image());
   const image: WorkingImage = {
     uid: crypto.randomUUID(),

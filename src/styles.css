@@ -96,6 +96,10 @@ button:disabled {
   cursor: default;
   opacity: 0.45;
 }
+button.is-busy:disabled {
+  opacity: 1;
+  cursor: progress;
+}
 button.active,
 .tabs button.active {
   background: var(--hover);
@@ -1555,6 +1559,15 @@ button {
   min-width: 0;
   width: auto;
 }
+.generate-submit-row > .in-progress-cancel {
+  flex: 0 0 auto;
+}
+.generate-submit-row .submit-label {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+}
 .generate-submit-row > .generate-repeat-count {
   flex: 0 0 60px;
   width: 60px;
@@ -2099,17 +2112,36 @@ button {
   font-size: 12px;
   padding: 3px 8px;
 }
-.prompt-optimize-error {
+.in-progress-action {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.prompt-optimize.is-busy,
+.generate-submit-row > button.is-busy {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+}
+.in-progress-cancel {
+  font-size: 12px;
+  padding: 3px 8px;
+}
+.prompt-optimize-error,
+.generation-failure {
   display: flex;
   align-items: flex-start;
   justify-content: space-between;
   gap: 8px;
   margin-top: 6px;
 }
-.prompt-optimize-error p {
+.prompt-optimize-error p,
+.generation-failure p {
   margin: 0;
 }
-.prompt-optimize-error button {
+.prompt-optimize-error button,
+.generation-failure button {
   font-size: 12px;
   padding: 3px 8px;
 }
