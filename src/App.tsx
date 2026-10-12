@@ -242,9 +242,30 @@ export default function App() {
   }, []);
   const generation = useGenerationTasks(
     submitting,
-    (r) => {
-      storeResult(r, true);
-      if (r.item.status === "running") return;
+    (r, publish) => {
+      const key = workspaceKey(r.snapshot);
+      const current = currentResults.current[key];
+      if (publish?.settleOnly && current?.item.id !== r.item.id) {
+        setAttempts((previous) => {
+          const list = previous[key];
+          if (!list?.some((attempt) => attempt.item.id === r.item.id))
+            return previous;
+          return {
+            ...previous,
+            [key]: list.map((attempt) =>
+              attempt.item.id === r.item.id
+                ? {
+                    ...r,
+                    selectedIndex: attempt.selectedIndex,
+                    image: attempt.image,
+                  }
+                : attempt,
+            ),
+          };
+        });
+      } else storeResult(r, true);
+      if (r.item.status === "running" || publish?.quiet || publish?.settleOnly)
+        return;
       // Task completion never interrupts the canvas or the user's next request.
       if (r.saved && r.item.status !== "partial")
         showNotice(m.notice_task_saved(), true);
@@ -256,13 +277,15 @@ export default function App() {
     refreshHistory,
     showNotice,
   );
-  const generationTask = generation.task;
-  const busy = generation.tasks.length > 0;
+  const generationTask =
+    generation.tasks.find((t) => (t.intent ?? "create") === intent) ??
+    generation.task;
+  const busy = generation.inflight > 0;
   const storageBusy =
     !ready ||
     !generation.ready ||
     generation.accepting ||
-    generation.tasks.length > 0 ||
+    generation.inflight > 0 ||
     importing ||
     savingResult;
   const storageBusyRef = useRef(storageBusy);
@@ -1124,6 +1147,10 @@ export default function App() {
               }
               generationTask={generationTask}
               onStopRemaining={() => generation.stopRemaining()}
+              onCancelGeneration={() =>
+                generationTask && generation.cancel(generationTask.id)
+              }
+              generationFailure={generation.failures[intent] ?? null}
               sentRequestId={
                 requestFeedback?.key === activeKey
                   ? requestFeedback.id
@@ -1151,7 +1178,7 @@ export default function App() {
               <HistoryPanel
                 saveDirectory={prefs.saveDirectory}
                 items={history}
-                onCancel={(id) => generation.stopRemaining(id)}
+                onCancel={(id) => generation.cancel(id)}
                 onRefresh={() => void refreshHistory()}
                 onUseAsInput={(item) => void historyAsInput(item)}
                 onRestoreEdit={(item) => void restoreHistory(item)}
@@ -1351,13 +1378,12 @@ export default function App() {
               {generationTask.stopRequested ? (
                 <span>{m.tasks_stopped()}</span>
               ) : (
-                (generationTask.remainingRequests ?? 0) > 0 && (
-                  <button
-                    onClick={() => generation.stopRemaining(generationTask.id)}
-                  >
-                    {m.tasks_stop()}
-                  </button>
-                )
+                <button
+                  type="button"
+                  onClick={() => generation.cancel(generationTask.id)}
+                >
+                  {m.action_cancel()}
+                </button>
               )}
               <button
                 onClick={() => {

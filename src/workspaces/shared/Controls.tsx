@@ -25,8 +25,12 @@ import { estimateCost } from "../../lib/params";
 import { estimateComfyCredits, formatCredits } from "../../models/pricing";
 import { sentSize, taskIntent } from "../../lib/workspace";
 import { useEffect, useId, useRef, useState } from "react";
-import { AppError, isDesktop, promptOptimize } from "../../lib/api";
-import { packOptimizeContext } from "../../lib/promptOptimize";
+import { AppError, isCancelledError, isDesktop, promptOptimize } from "../../lib/api";
+import {
+  optimizeNeedsSettings,
+  packOptimizeContext,
+  takeOptimizedPrompt,
+} from "../../lib/promptOptimize";
 import { gptSize } from "../../models/gpt";
 import type {
   Draft,
@@ -55,6 +59,8 @@ export interface WorkspaceControlsProps {
   sentRequestId?: string;
   onShowTask?: () => void;
   onStopRemaining?: () => void;
+  onCancelGeneration?: () => void;
+  generationFailure?: { message: string; code?: string } | null;
 }
 export function RouteControls({
   draft: d,
@@ -540,31 +546,63 @@ export function PromptEditor({
   const { length, min, max, error } = promptLength(d);
   const [optimizeBusy, setOptimizeBusy] = useState(false);
   const [optimizeError, setOptimizeError] = useState("");
-  const [optimizeNeedsSettings, setOptimizeNeedsSettings] = useState(false);
+  const [optimizeOpenSettings, setOptimizeOpenSettings] = useState(false);
+  const abortRef = useRef<AbortController | null>(null);
+  useEffect(
+    () => () => {
+      abortRef.current?.abort();
+    },
+    [],
+  );
+  const cancelOptimize = () => {
+    const abort = abortRef.current;
+    abort?.abort();
+    if (abortRef.current === abort) abortRef.current = null;
+    setOptimizeBusy(false);
+  };
   const optimize = async () => {
+    if (optimizeBusy) return;
     const snapshot = draftRef.current;
     const version = getVersion();
+    const abort = new AbortController();
+    abortRef.current = abort;
     setOptimizeBusy(true);
     setOptimizeError("");
-    setOptimizeNeedsSettings(false);
+    setOptimizeOpenSettings(false);
     try {
       if (!isDesktop()) throw new Error(m.prompt_optimize_desktop());
       const text = (
-        await promptOptimize(snapshot.family, packOptimizeContext(snapshot))
+        await promptOptimize(
+          snapshot.family,
+          packOptimizeContext(snapshot),
+          crypto.randomUUID(),
+          abort.signal,
+        )
       ).trim();
+      if (abort.signal.aborted) return;
       if (!text) throw new Error(m.prompt_optimize_empty());
+      if (
+        !takeOptimizedPrompt(
+          abort.signal.aborted,
+          draftRef.current,
+          getVersion(),
+          version,
+          text,
+        )
+      )
+        return;
       applyOptimizedPrompt(version, text);
     } catch (e) {
+      if (abort.signal.aborted || isCancelledError(e)) return;
       setOptimizeError(e instanceof Error ? e.message : String(e));
-      const code = e instanceof AppError ? e.code : "";
-      setOptimizeNeedsSettings(
-        code === "backend_llm_key_missing" ||
-          code === "backend_llm_url_missing" ||
-          code === "backend_llm_model_missing" ||
-          code === "backend_llm_unauthorized",
+      setOptimizeOpenSettings(
+        optimizeNeedsSettings(e instanceof AppError ? e.code : ""),
       );
     } finally {
-      setOptimizeBusy(false);
+      if (abortRef.current === abort) {
+        abortRef.current = null;
+        setOptimizeBusy(false);
+      }
     }
   };
   const insert = (tag: string) => {
@@ -592,15 +630,28 @@ export function PromptEditor({
             ? m.handoff_instruction()
             : m.prompt()}
         </h2>
-        <button
-          type="button"
-          className="prompt-optimize"
-          disabled={optimizeBusy}
-          title={m.prompt_optimize_hint()}
-          onClick={() => void optimize()}
-        >
-          {optimizeBusy ? m.prompt_optimize_busy() : m.prompt_optimize()}
-        </button>
+        <div className="in-progress-action">
+          <button
+            type="button"
+            className={"prompt-optimize" + (optimizeBusy ? " is-busy" : "")}
+            disabled={optimizeBusy}
+            aria-busy={optimizeBusy || undefined}
+            title={m.prompt_optimize_hint()}
+            onClick={() => void optimize()}
+          >
+            {optimizeBusy && <span className="activity-dot" aria-hidden="true" />}
+            {optimizeBusy ? m.prompt_optimize_busy() : m.prompt_optimize()}
+          </button>
+          {optimizeBusy && (
+            <button
+              type="button"
+              className="in-progress-cancel"
+              onClick={cancelOptimize}
+            >
+              {m.action_cancel()}
+            </button>
+          )}
+        </div>
       </div>
       <textarea
         ref={ref}
@@ -632,7 +683,7 @@ export function PromptEditor({
       {optimizeError && (
         <div className="prompt-optimize-error" role="alert">
           <p className="error-text">{optimizeError}</p>
-          {optimizeNeedsSettings && onSettings && (
+          {optimizeOpenSettings && onSettings && (
             <button type="button" onClick={onSettings}>
               {m.prompt_optimize_open_settings()}
             </button>
@@ -784,6 +835,8 @@ export function GenerateFooter(p: WorkspaceControlsProps) {
     return () => window.clearInterval(timer);
   }, [startedAt]);
   const job = p.generationTask;
+  const jobForThis = !!job && (job.intent ?? "create") === taskIntent(d);
+  const generating = jobForThis;
   const perRequestCredits = estimateComfyCredits(singleImageDraft(d));
   const credits = perRequestCredits
     ? {
@@ -834,8 +887,11 @@ export function GenerateFooter(p: WorkspaceControlsProps) {
           {job.stopRequested ? (
             <span className="help">{m.tasks_stopped()}</span>
           ) : (
-            (job.remainingRequests ?? 0) > 0 && (
-              <button onClick={p.onStopRemaining}>{m.stop_later()}</button>
+            !jobForThis &&
+            p.onCancelGeneration && (
+              <button type="button" onClick={p.onCancelGeneration}>
+                {m.action_cancel()}
+              </button>
             )
           )}
           {(job.intent ?? "create") !== taskIntent(d) && (
@@ -851,31 +907,51 @@ export function GenerateFooter(p: WorkspaceControlsProps) {
       )}
       <div className="generate-submit-row">
         <button
-          className="primary wide"
+          className={"primary wide" + (generating ? " is-busy" : "")}
           disabled={
+            generating ||
             p.busy ||
             !p.providerStatus?.[d.provider] ||
             !!p.errors.length ||
             !p.finalPreview
           }
+          aria-busy={generating || undefined}
           onClick={() => p.onGenerate(repeatCount)}
           aria-describedby={reason ? "generation-reason" : undefined}
         >
-          <span
-            className="submit-label"
-            style={{ opacity: labelVisible ? 1 : 0 }}
-          >
-            {sent
-              ? m.request_sent()
-              : (taskIntent(d) === "edit" ? m.submit_edit : m.submit_generate)({
-                  detail: creditLabel
-                    ? m.about_credits({ amount: creditLabel })
-                    : cost != null
-                      ? m.about_cost({ amount: cost.toFixed(3) })
-                      : m.count_images({ count: outputCount }),
-                })}
-          </span>
+          {generating ? (
+            <span className="submit-label">
+              <span className="activity-dot" aria-hidden="true" />
+              {(taskIntent(d) === "edit"
+                ? m.submit_edit_busy
+                : m.submit_generate_busy)()}
+            </span>
+          ) : (
+            <span
+              className="submit-label"
+              style={{ opacity: labelVisible ? 1 : 0 }}
+            >
+              {sent
+                ? m.request_sent()
+                : (taskIntent(d) === "edit" ? m.submit_edit : m.submit_generate)({
+                    detail: creditLabel
+                      ? m.about_credits({ amount: creditLabel })
+                      : cost != null
+                        ? m.about_cost({ amount: cost.toFixed(3) })
+                        : m.count_images({ count: outputCount }),
+                  })}
+            </span>
+          )}
         </button>
+        {generating && p.onCancelGeneration && (
+          <button
+            type="button"
+            className="in-progress-cancel"
+            onClick={p.onCancelGeneration}
+          >
+            {m.action_cancel()}
+          </button>
+        )}
         <input
           className="generate-repeat-count"
           type="number"
@@ -885,7 +961,7 @@ export function GenerateFooter(p: WorkspaceControlsProps) {
           max={20}
           step={1}
           value={repeatCount}
-          disabled={p.busy}
+          disabled={p.busy || generating}
           onChange={(e) => {
             const value = Number(e.target.value);
             p.onChange({
@@ -903,6 +979,17 @@ export function GenerateFooter(p: WorkspaceControlsProps) {
             !p.errors.length && (
               <button onClick={p.onSettings}>{m.action_configure()}</button>
             )}
+        </div>
+      )}
+      {p.generationFailure && !generating && (
+        <div className="generation-failure" role="alert">
+          <p className="error-text">{p.generationFailure.message}</p>
+          {(p.generationFailure.code === "backend_missing_api_key" ||
+            p.generationFailure.code === "backend_provider_unauthorized") && (
+            <button type="button" onClick={p.onSettings}>
+              {m.action_configure()}
+            </button>
+          )}
         </div>
       )}
     </div>

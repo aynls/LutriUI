@@ -27,6 +27,11 @@ import type {
   MaintenanceReport,
 } from "./types";
 
+export const CANCELLED_CODES = [
+  "backend_llm_cancelled",
+  "backend_generation_cancelled",
+] as const;
+
 export class AppError extends Error {
   status?: number;
   hint?: string;
@@ -47,6 +52,22 @@ export class AppError extends Error {
   toString() {
     return this.message;
   }
+}
+
+export function cancelledError(
+  code: (typeof CANCELLED_CODES)[number] = "backend_generation_cancelled",
+) {
+  return new AppError(localizeMessage(code, "Cancelled"), { code });
+}
+
+export function isCancelledError(e: unknown): boolean {
+  if (!e || typeof e !== "object") return false;
+  if ("name" in e && (e as { name?: string }).name === "AbortError") return true;
+  return (
+    e instanceof AppError &&
+    !!e.code &&
+    (CANCELLED_CODES as readonly string[]).includes(e.code)
+  );
 }
 
 /** 后端错误为 ProviderError 的 JSON 字符串，解析为可读错误 */
@@ -113,16 +134,29 @@ export const isDesktop = () => isTauri();
 export async function generate(
   request: GenerateRequestPayload,
   onProgress?: (progress: GenerationProgress) => void,
+  signal?: AbortSignal,
 ): Promise<GenerateOutput> {
   let off: (() => void) | undefined;
+  const requestId = request.requestId;
+  const abort = () => {
+    if (requestId) void call("generate_cancel", { requestId });
+  };
+  if (signal?.aborted) {
+    abort();
+    throw cancelledError();
+  }
+  if (signal && requestId) signal.addEventListener("abort", abort, { once: true });
   try {
     if (onProgress)
       off = await listen<GenerationProgress>("generation-progress", (event) => {
         if (event.payload.requestId === request.requestId)
           onProgress(event.payload);
       });
-    return await call<GenerateOutput>("generate", { request });
+    const out = await call<GenerateOutput>("generate", { request });
+    if (signal?.aborted) throw cancelledError();
+    return out;
   } finally {
+    signal?.removeEventListener("abort", abort);
     off?.();
   }
 }
@@ -193,8 +227,32 @@ export const llmCredentialSave = (key: string) =>
 export const llmCredentialRemove = () => call<void>("llm_credential_remove");
 export const llmCheck = async () =>
   localizeStored(await call<string>("llm_check"));
-export const promptOptimize = (family: string, userContent: string) =>
-  call<string>("prompt_optimize", { family, userContent });
+export async function promptOptimize(
+  family: string,
+  userContent: string,
+  requestId: string,
+  signal?: AbortSignal,
+) {
+  const abort = () => {
+    void call("prompt_optimize_cancel", { requestId });
+  };
+  if (signal?.aborted) {
+    abort();
+    throw cancelledError("backend_llm_cancelled");
+  }
+  if (signal) signal.addEventListener("abort", abort, { once: true });
+  try {
+    const text = await call<string>("prompt_optimize", {
+      family,
+      userContent,
+      requestId,
+    });
+    if (signal?.aborted) throw cancelledError("backend_llm_cancelled");
+    return text;
+  } finally {
+    signal?.removeEventListener("abort", abort);
+  }
+}
 export const importUrl = async (url: string) =>
   withDefaultName(await call<ImportedImage>("import_url", { url }), () =>
     m.default_name_web(),

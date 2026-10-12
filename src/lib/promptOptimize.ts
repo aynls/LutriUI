@@ -116,6 +116,68 @@ export function draftWithOptimizedPrompt(
   return { ...live, prompt };
 }
 
+/** Settings / endpoint failures that an “Open settings” control can actually fix. */
+export const OPTIMIZE_SETTINGS_CODES = new Set([
+  "backend_llm_key_missing",
+  "backend_llm_url_missing",
+  "backend_llm_url_invalid",
+  "backend_llm_url_secrets",
+  "backend_llm_model_missing",
+  "backend_llm_unauthorized",
+  "backend_llm_network_failed",
+  "backend_llm_timeout",
+  "backend_llm_no_completions",
+]);
+
+export function optimizeNeedsSettings(code?: string): boolean {
+  return !!code && OPTIMIZE_SETTINGS_CODES.has(code);
+}
+
+/**
+ * Ignore a late Chat Completions reply after cancel. Version matching still
+ * applies when the user did not cancel.
+ */
+export function takeOptimizedPrompt(
+  aborted: boolean,
+  live: Draft,
+  liveVersion: string,
+  expectedVersion: string,
+  prompt: string,
+): Draft | null {
+  if (aborted) return null;
+  return draftWithOptimizedPrompt(live, liveVersion, expectedVersion, prompt);
+}
+
+export function llmFailureKind(
+  code?: string,
+): "auth" | "timeout" | "endpoint" | "other" {
+  if (
+    code === "backend_llm_unauthorized" ||
+    code === "backend_llm_key_missing" ||
+    code === "backend_provider_unauthorized" ||
+    code === "backend_missing_api_key"
+  )
+    return "auth";
+  if (
+    code === "backend_llm_timeout" ||
+    code === "backend_network_timeout" ||
+    code === "backend_bfl_timeout" ||
+    code === "backend_runware_timeout" ||
+    code === "backend_comfy_timeout"
+  )
+    return "timeout";
+  if (
+    code === "backend_llm_network_failed" ||
+    code === "backend_llm_check_network" ||
+    code === "backend_llm_no_completions" ||
+    code === "backend_llm_check_no_models" ||
+    code === "backend_network_failed" ||
+    code === "backend_openrouter_connect"
+  )
+    return "endpoint";
+  return "other";
+}
+
 /** Documents the Chat Completions payload shape. The desktop backend builds the live request. */
 export function optimizeChatMessages(family: FamilyId | string, userContent: string) {
   const extra = familyTemplate(family);

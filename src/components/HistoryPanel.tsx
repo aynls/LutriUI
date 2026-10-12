@@ -454,10 +454,11 @@ function HistoryDetail({
       {item.taskId && (
         <p className="help">{m.history_provider_task({ id: item.taskId })}</p>
       )}
-      {(item.status === "queued" || item.status === "running") &&
-        item.batch?.requests.some((request) => request.status === "queued") && (
-          <button onClick={onCancel}>{m.history_stop_unsent()}</button>
-        )}
+      {(item.status === "queued" || item.status === "running") && (
+        <button type="button" onClick={onCancel}>
+          {m.action_cancel()}
+        </button>
+      )}
 
       <div className="mt-3">
         <p className="mb-1 text-xs text-zinc-500">{m.history_prompt()}</p>

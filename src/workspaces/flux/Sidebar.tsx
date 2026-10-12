@@ -51,6 +51,8 @@ export interface SidebarProps {
   sentRequestId?: string;
   onShowTask?: () => void;
   onStopRemaining?: () => void;
+  onCancelGeneration?: () => void;
+  generationFailure?: { message: string; code?: string } | null;
 }
 
 export default function Sidebar(p: SidebarProps) {

@@ -98,6 +98,9 @@ pub async fn generate(req: &GenerateRequest) -> ProviderResult {
         .send()
         .await
         .map_err(|e| {
+            if e.is_timeout() {
+                return crate::provider::transport::send_failed(e, "openrouter");
+            }
             ProviderError::coded(
                 "backend_openrouter_connect",
                 format!("Couldn't connect to OpenRouter: {e}"),
@@ -149,13 +152,28 @@ pub async fn generate(req: &GenerateRequest) -> ProviderResult {
             ),
             _ => (None, ""),
         };
+        let auth = status == 401 || status == 403;
         return Err(ProviderError {
             status: Some(status),
-            message,
+            message: if auth {
+                "OpenRouter rejected the API key".into()
+            } else {
+                message
+            },
             hint,
-            code: String::new(),
+            code: if auth {
+                "backend_provider_unauthorized".into()
+            } else {
+                String::new()
+            },
             hint_code: hint_code.to_string(),
-            params: Map::new(),
+            params: if auth {
+                let mut params = Map::new();
+                params.insert("provider".into(), json!("OpenRouter"));
+                params
+            } else {
+                Map::new()
+            },
         });
     }
 
