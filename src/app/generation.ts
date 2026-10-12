@@ -22,6 +22,30 @@ export interface SavedResult {
   files: { kind: string; name: string; data: string }[];
   saved: boolean;
 }
+
+/** How a finished or in-flight job may touch the workspace result. */
+export interface ResultPublish {
+  /** This job is not the foreground submission. Settle its own attempt only. */
+  settleOnly?: boolean;
+  /** Do not raise a completion notice. Cancel already told the user. */
+  quiet?: boolean;
+}
+
+/**
+ * The latest submission of an intent owns the workspace result.
+ * A job that no longer owns it only settles an attempt already on screen.
+ * Cancel keeps that update, but does not raise a completion notice.
+ */
+export function resultPublishFor(
+  jobId: string,
+  foregroundJobId: string | undefined,
+  cancelled: boolean,
+): ResultPublish | undefined {
+  const owns = foregroundJobId === undefined || foregroundJobId === jobId;
+  if (!owns) return { settleOnly: true, quiet: true };
+  if (cancelled) return { quiet: true };
+  return undefined;
+}
 export function getResultBase(result: SavedResult | null) {
   return result ? primaryImage(result.snapshot) : null;
 }

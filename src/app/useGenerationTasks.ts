@@ -8,9 +8,11 @@ import {
   executeGeneration,
   queuedGeneration,
   mergeGenerationResults,
+  resultPublishFor,
+  type ResultPublish,
   type SavedResult,
 } from "./generation";
-import type { Draft, GenerationTask } from "../lib/types";
+import type { Draft, GenerationTask, TaskIntent } from "../lib/types";
 
 type Job = ReturnType<typeof queuedGeneration> & {
   snapshots?: Draft[];
@@ -21,7 +23,7 @@ type Job = ReturnType<typeof queuedGeneration> & {
 };
 export function useGenerationTasks(
   active: RefObject<boolean>,
-  onResult: (result: SavedResult) => void,
+  onResult: (result: SavedResult, publish?: ResultPublish) => void,
   onHistory: () => Promise<void>,
   onNotice: (message: string) => void,
 ) {
@@ -30,12 +32,12 @@ export function useGenerationTasks(
   >([]);
   const [accepting, setAccepting] = useState(false);
   const [ready, setReady] = useState(false);
-  const [failure, setFailure] = useState<{
-    intent: ReturnType<typeof taskIntent>;
-    message: string;
-    code?: string;
-  } | null>(null);
+  const [failures, setFailures] = useState<
+    Partial<Record<TaskIntent, { message: string; code?: string }>>
+  >({});
+  const [inflight, setInflight] = useState(0);
   const running = useRef(new Map<string, Job>());
+  const foreground = useRef(new Map<TaskIntent, string>());
   const progress = useRef(new Map<string, GenerationTask>());
   const locked = useRef(false);
   const alive = useRef(true);
@@ -44,14 +46,23 @@ export function useGenerationTasks(
   callbacks.current = { onResult, onHistory, onNotice };
   const sync = () => {
     active.current = running.current.size > 0 || locked.current;
-    if (alive.current)
-      setTasks(
-        Array.from(progress.current, ([id, task]) => ({
-          ...task,
-          id,
-          prompt: running.current.get(id)?.snapshot.prompt ?? "",
-        })),
-      );
+    if (!alive.current) return;
+    setInflight(running.current.size);
+    setTasks(
+      Array.from(progress.current, ([id, task]) => ({
+        ...task,
+        id,
+        prompt: running.current.get(id)?.snapshot.prompt ?? "",
+      })),
+    );
+  };
+  const clearFailure = (intent: TaskIntent) => {
+    setFailures((prev) => {
+      if (!prev[intent]) return prev;
+      const next = { ...prev };
+      delete next[intent];
+      return next;
+    });
   };
   const updateTask = (
     id: string,
@@ -113,6 +124,17 @@ export function useGenerationTasks(
       (e instanceof api.AppError && e.hint ? " · " + e.hint : "");
     const errorCode = (e: unknown) =>
       e instanceof api.AppError ? e.code : undefined;
+    const publish = (value: SavedResult) => {
+      if (!alive.current) return;
+      callbacks.current.onResult(
+        value,
+        resultPublishFor(
+          job.item.id,
+          foreground.current.get(taskIntent(job.snapshot)),
+          !!job.cancelled,
+        ),
+      );
+    };
     try {
       job.item = { ...job.item, status: "running", phase: "preparing" };
       await persist();
@@ -178,7 +200,8 @@ export function useGenerationTasks(
             const thumb = await makeThumb(result.image.dataUrl).catch(
               () => null,
             );
-            if (job.cancelled) throw api.cancelledError();
+            // executeGeneration already accepted this provider response.
+            // Cancel during local decode must not drop a completed image.
             await persist(() => {
               if (requests) requests[i].status = "ok";
               combined = mergeGenerationResults(combined, result);
@@ -194,13 +217,7 @@ export function useGenerationTasks(
               };
               job.files = combined.files;
             });
-            if (job.cancelled) throw api.cancelledError();
-            if (combined && alive.current)
-              callbacks.current.onResult({
-                ...combined,
-                item: job.item,
-                saved: true,
-              });
+            if (combined) publish({ ...combined, item: job.item, saved: true });
           } catch (e) {
             const cancelled = api.isCancelledError(e) || job.cancelled;
             if (cancelled) {
@@ -232,8 +249,8 @@ export function useGenerationTasks(
                 ]
                   .filter(Boolean)
                   .join("；");
-              if (combined && alive.current)
-                callbacks.current.onResult({
+              if (combined)
+                publish({
                   ...combined,
                   item: job.item,
                   saved: false,
@@ -280,20 +297,22 @@ export function useGenerationTasks(
         m.error_history_resave({ detail: errorMessage(e) }),
       );
     }
-    if (result && alive.current)
-      callbacks.current.onResult({ ...result, item: job.item, saved });
+    if (result) publish({ ...result, item: job.item, saved });
     else if (alive.current && !job.cancelled) {
-      const message = localizeStored(job.item.error ?? "");
-      setFailure({
-        intent: taskIntent(job.snapshot),
-        message,
-        code: job.lastErrorCode,
-      });
-      callbacks.current.onNotice(
-        m.notice_task_failed({
-          detail: message,
-        }),
-      );
+      const intent = taskIntent(job.snapshot);
+      const owner = foreground.current.get(intent);
+      if (!owner || owner === job.item.id) {
+        const message = localizeStored(job.item.error ?? "");
+        setFailures((prev) => ({
+          ...prev,
+          [intent]: { message, code: job.lastErrorCode },
+        }));
+        callbacks.current.onNotice(
+          m.notice_task_failed({
+            detail: message,
+          }),
+        );
+      }
     }
     await refresh();
     running.current.delete(job.item.id);
@@ -305,7 +324,7 @@ export function useGenerationTasks(
     mcpSubmission?: { idempotencyKey: string; workspaceVersion: string },
   ) => {
     if (locked.current || !ready) return;
-    setFailure(null);
+    clearFailure(taskIntent(snapshot));
     if (!Number.isInteger(count) || count < 1 || count > 20)
       throw new Error(m.error_count_range());
     locked.current = true;
@@ -336,6 +355,8 @@ export function useGenerationTasks(
         })),
       };
       await api.historySave(job.item, job.files);
+      // This submission owns the workspace result until a later one replaces it.
+      foreground.current.set(taskIntent(snapshot), job.item.id);
       // Each submission starts independently after its snapshot is persisted.
       void run(job);
       return job.item.id;
@@ -388,7 +409,9 @@ export function useGenerationTasks(
     job.abort?.abort();
     skipQueued(job);
     job.stopRequested = true;
-    setFailure(null);
+    clearFailure(taskIntent(job.snapshot));
+    // Hide the busy control immediately. The job stays inflight until it settles,
+    // so library migration and the close warning still see the write.
     updateTask(job.item.id, () => null);
     callbacks.current.onNotice(m.notice_task_cancelled());
     return { cancelled: true };
@@ -475,6 +498,7 @@ export function useGenerationTasks(
     submit,
     stopRemaining,
     cancel,
-    failure,
+    failures,
+    inflight,
   };
 }
