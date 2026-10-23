@@ -1,6 +1,9 @@
 //! Shared minimal HTTP responder for integration tests. Binds a loopback
 //! listener, replays the given (status, body) responses in order, records
 //! every request head and JSON payload, and closes each connection.
+//!
+//! Callers pass response headers themselves. Empty means none, so a suite
+//! cannot inherit another provider's billing or retry dialect.
 use serde_json::Value;
 use std::{
     io::{Read, Write},
@@ -9,7 +12,13 @@ use std::{
     time::{Duration, Instant},
 };
 
-pub fn server(responses: Vec<(u16, Value)>) -> (String, thread::JoinHandle<Vec<(String, Value)>>) {
+pub type Captured = Vec<(String, Value)>;
+
+/// `headers` returns extra header lines for that status: empty, or ending in `\r\n`.
+pub fn server(
+    responses: Vec<(u16, Value)>,
+    headers: impl Fn(u16) -> String + Send + 'static,
+) -> (String, thread::JoinHandle<Captured>) {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let url = format!("http://{}", listener.local_addr().unwrap());
     listener.set_nonblocking(true).unwrap();
@@ -17,6 +26,7 @@ pub fn server(responses: Vec<(u16, Value)>) -> (String, thread::JoinHandle<Vec<(
         let mut requests = Vec::new();
         let deadline = Instant::now() + Duration::from_secs(20);
         for (status, body) in responses {
+            let extra = headers(status);
             let mut stream = loop {
                 match listener.accept() {
                     Ok((s, _)) => break s,
@@ -65,12 +75,12 @@ pub fn server(responses: Vec<(u16, Value)>) -> (String, thread::JoinHandle<Vec<(
             };
             requests.push((head, payload));
             let text = serde_json::to_string(&body).unwrap();
-            let billing = if status == 200 {
-                "X-Comfy-Credits-Used: 12.75\r\n"
-            } else {
-                ""
-            };
-            write!(stream,"HTTP/1.1 {status} Test\r\nContent-Type: application/json\r\nContent-Length: {}\r\nRetry-After: 1\r\n{billing}Connection: close\r\n\r\n{text}",text.len()).unwrap();
+            let len = text.len();
+            write!(
+                stream,
+                "HTTP/1.1 {status} Test\r\nContent-Type: application/json\r\nContent-Length: {len}\r\n{extra}Connection: close\r\n\r\n{text}"
+            )
+            .unwrap();
         }
         requests
     });

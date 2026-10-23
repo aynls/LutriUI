@@ -3,9 +3,21 @@ mod common;
 
 use base64::Engine;
 use lutriui_lib::provider::{ark, comfy, google, qwencloud, runware, xai, GenerateRequest};
-use serde_json::json;
+use serde_json::{json, Value};
 
-use common::server;
+use common::server as http_server;
+
+/// Comfy cases in this file read `X-Comfy-Credits-Used` and `Retry-After`.
+/// Those headers stay here so the shared responder does not emit them for other suites.
+fn server(responses: Vec<(u16, Value)>) -> (String, std::thread::JoinHandle<Vec<(String, Value)>>) {
+    http_server(responses, |status| {
+        let mut headers = String::from("Retry-After: 1\r\n");
+        if status == 200 {
+            headers.push_str("X-Comfy-Credits-Used: 12.75\r\n");
+        }
+        headers
+    })
+}
 
 fn png() -> String {
     let mut bytes = std::io::Cursor::new(Vec::new());
