@@ -124,47 +124,23 @@ const makeHost = (initial: Draft, version = "inst:0"): FakeHost => {
 
 const code = (e: unknown) => (e instanceof McpError ? e.code : String(e));
 
-describe("workspace_patch strict fields", () => {
-  it("rejects an unknown route field without touching the draft", async () => {
+it("rejects invalid patch input without touching the draft", async () => {
+  const cases: [string, Record<string, unknown>, string][] = [
+    ["unknown route field", { params: { bogus: 1 } }, "PATCH_UNSUPPORTED"],
+    ["wrong primitive type", { params: { quality: 5 } }, "PARAM_INVALID"],
+    ["unsupported resetParams name", { resetParams: ["toString"] }, "PARAM_UNSUPPORTED"],
+  ];
+  for (const [name, patch, expected] of cases) {
     const fake = makeHost(draft());
     const actions = createApplicationActions(() => fake.host);
     const before = fake.host.readCurrent();
     const err = await actions
-      .dispatch("workspace_patch", {
-        expectedVersion: "inst:0",
-        patch: { params: { bogus: 1 } },
-      })
+      .dispatch("workspace_patch", { expectedVersion: "inst:0", patch })
       .catch((e) => e);
-    expect(code(err)).toBe("PATCH_UNSUPPORTED");
-    expect(fake.commits).toHaveLength(0);
-    expect(fake.host.readCurrent()).toBe(before);
-  });
-
-  it("rejects a wrong primitive type without committing", async () => {
-    const fake = makeHost(draft());
-    const actions = createApplicationActions(() => fake.host);
-    const err = await actions
-      .dispatch("workspace_patch", {
-        expectedVersion: "inst:0",
-        patch: { params: { quality: 5 } },
-      })
-      .catch((e) => e);
-    expect(code(err)).toBe("PARAM_INVALID");
-    expect(fake.commits).toHaveLength(0);
-  });
-
-  it("rejects an unsupported resetParams name via hasOwn", async () => {
-    const fake = makeHost(draft());
-    const actions = createApplicationActions(() => fake.host);
-    const err = await actions
-      .dispatch("workspace_patch", {
-        expectedVersion: "inst:0",
-        patch: { resetParams: ["toString"] },
-      })
-      .catch((e) => e);
-    expect(code(err)).toBe("PARAM_UNSUPPORTED");
-    expect(fake.commits).toHaveLength(0);
-  });
+    expect(code(err), name).toBe(expected);
+    expect(fake.commits, name).toHaveLength(0);
+    expect(fake.host.readCurrent(), name).toBe(before);
+  }
 });
 
 describe("workspace_patch guards and commit", () => {

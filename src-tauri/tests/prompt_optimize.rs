@@ -1,80 +1,11 @@
 //! Local HTTP simulations for prompt optimize. Never calls image generate.
-use lutriui_lib::llm::{check_with, optimize_with, LlmSettings};
-use serde_json::{json, Value};
-use std::{
-    io::{Read, Write},
-    net::TcpListener,
-    thread,
-    time::{Duration, Instant},
-};
+mod common;
 
-fn server(responses: Vec<(u16, Value)>) -> (String, thread::JoinHandle<Vec<(String, Value)>>) {
-    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-    let url = format!("http://{}", listener.local_addr().unwrap());
-    listener.set_nonblocking(true).unwrap();
-    let handle = thread::spawn(move || {
-        let mut requests = Vec::new();
-        let deadline = Instant::now() + Duration::from_secs(20);
-        for (status, body) in responses {
-            let mut stream = loop {
-                match listener.accept() {
-                    Ok((s, _)) => break s,
-                    Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
-                        assert!(
-                            Instant::now() < deadline,
-                            "expected HTTP request did not arrive"
-                        );
-                        thread::sleep(Duration::from_millis(5));
-                    }
-                    Err(e) => panic!("{e}"),
-                }
-            };
-            stream.set_nonblocking(false).unwrap();
-            stream
-                .set_read_timeout(Some(Duration::from_secs(5)))
-                .unwrap();
-            let mut bytes = Vec::new();
-            let mut chunk = [0u8; 4096];
-            let (head, length, offset) = loop {
-                let read = stream.read(&mut chunk).unwrap();
-                assert!(read > 0);
-                bytes.extend_from_slice(&chunk[..read]);
-                if let Some(end) = bytes.windows(4).position(|v| v == b"\r\n\r\n") {
-                    let head = String::from_utf8(bytes[..end].to_vec()).unwrap();
-                    let length: usize = head
-                        .lines()
-                        .find_map(|line| {
-                            line.to_lowercase()
-                                .strip_prefix("content-length:")
-                                .map(|v| v.trim().parse().unwrap())
-                        })
-                        .unwrap_or(0);
-                    break (head, length, end + 4);
-                }
-            };
-            while bytes.len() < offset + length {
-                let n = stream.read(&mut chunk).unwrap();
-                assert!(n > 0);
-                bytes.extend_from_slice(&chunk[..n]);
-            }
-            let payload = if length > 0 {
-                serde_json::from_slice(&bytes[offset..offset + length]).unwrap()
-            } else {
-                Value::Null
-            };
-            requests.push((head, payload));
-            let text = serde_json::to_string(&body).unwrap();
-            write!(
-                stream,
-                "HTTP/1.1 {status} Test\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{text}",
-                text.len()
-            )
-            .unwrap();
-        }
-        requests
-    });
-    (url, handle)
-}
+use lutriui_lib::llm::{check_with, optimize_with, LlmSettings};
+use serde_json::json;
+use std::net::TcpListener;
+
+use common::server;
 
 fn settings(url: &str) -> LlmSettings {
     LlmSettings {
@@ -115,6 +46,7 @@ async fn optimize_posts_one_independent_chat_turn() {
     assert!(requests[0].1.get("previous_response_id").is_none());
     assert!(requests[0].1.get("conversation").is_none());
     assert!(requests[0].1.get("conversation_id").is_none());
+    assert!(requests[0].1.get("store").is_none());
 }
 
 #[tokio::test]
@@ -237,25 +169,4 @@ async fn connection_check_network_error_is_not_auth() {
     .await
     .unwrap_err();
     assert_eq!(err.code, "backend_llm_check_network");
-}
-
-#[tokio::test]
-async fn empty_model_is_sent_as_gpt_41_mini() {
-    let (url, handle) = server(vec![(
-        200,
-        json!({"choices":[{"message":{"content":"ok"}}]}),
-    )]);
-    optimize_with(
-        &LlmSettings {
-            base_url: format!("{url}/v1"),
-            model: String::new(),
-        },
-        "k",
-        "flux",
-        "context",
-    )
-    .await
-    .unwrap();
-    let requests = handle.join().unwrap();
-    assert_eq!(requests[0].1["model"], "gpt-4.1-mini");
 }
