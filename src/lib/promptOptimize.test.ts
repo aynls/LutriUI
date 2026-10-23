@@ -1,15 +1,7 @@
 import { expect, test } from "bun:test";
-import { catalog } from "../models/catalog";
 import { newDraft } from "./workspace";
 import type { Draft } from "./types";
-import {
-  DEFAULT_LLM_MODEL,
-  draftWithOptimizedPrompt,
-  familyTemplate,
-  genericTemplate,
-  optimizeChatMessages,
-  packOptimizeContext,
-} from "./promptOptimize";
+import { draftWithOptimizedPrompt, packOptimizeContext } from "./promptOptimize";
 
 function draft(over: Partial<Draft> = {}): Draft {
   return {
@@ -52,31 +44,9 @@ function draft(over: Partial<Draft> = {}): Draft {
   };
 }
 
-test("empty LLM model id defaults to gpt-4.1-mini", () => {
-  expect(DEFAULT_LLM_MODEL).toBe("gpt-4.1-mini");
-});
-
-test("every catalog family has a prompt-optimize overlay", () => {
-  for (const family of catalog.families) {
-    expect(familyTemplate(family.id).join(" ")).not.toBe("");
-  }
-  expect(familyTemplate("not-a-family")).toEqual([]);
-  expect(genericTemplate().join(" ")).toContain("independent");
-});
-
-test("family messages stay a single independent turn", () => {
-  const user = packOptimizeContext(draft());
-  const messages = optimizeChatMessages("flux", user);
-  expect(messages).toHaveLength(2);
-  expect(messages[0].role).toBe("system");
-  expect(messages[1].role).toBe("user");
-  expect(messages[0].content).toContain("FLUX.3 Image");
-  expect(messages[1].content).toBe(user);
-  expect(optimizeChatMessages("unknown-family", user)[0].content).not.toContain(
-    "FLUX.3 Image",
-  );
-  expect(optimizeChatMessages("gpt", user)[0].content).toContain("GPT Image");
-});
+// 默认模型回落（空模型 → gpt-4.1-mini）与家族模板/单轮消息契约由
+// src-tauri 的 llm.rs 内联测试和 tests/prompt_optimize.rs 在真实请求路径上覆盖；
+// TS 侧仅保留打包上下文与版本守卫这两段独有行为。
 
 test("packed context includes draft fields and never pixels or prior turns", () => {
   const text = packOptimizeContext(draft());

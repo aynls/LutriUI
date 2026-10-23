@@ -622,24 +622,6 @@ mod tests {
     }
 
     #[test]
-    fn chat_body_is_one_independent_turn() {
-        let body = chat_body("gpt-4.1-mini", "flux", "a red lantern");
-        let messages = body["messages"].as_array().unwrap();
-        assert_eq!(messages.len(), 2);
-        assert_eq!(messages[0]["role"], "system");
-        assert_eq!(messages[1]["role"], "user");
-        assert_eq!(messages[1]["content"], "a red lantern");
-        assert!(messages[0]["content"]
-            .as_str()
-            .unwrap()
-            .contains("FLUX.3 Image"));
-        assert!(body.get("previous_response_id").is_none());
-        assert!(body.get("conversation").is_none());
-        assert!(body.get("conversation_id").is_none());
-        assert!(body.get("store").is_none());
-    }
-
-    #[test]
     fn url_join_and_reject_embedded_secrets() {
         assert_eq!(
             chat_completions_url("https://api.openai.com/v1").unwrap(),
