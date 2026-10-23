@@ -2,10 +2,17 @@
 mod common;
 
 use lutriui_lib::llm::{check_with, optimize_with, LlmSettings};
-use serde_json::json;
+use serde_json::{json, Value};
 use std::net::TcpListener;
 
-use common::server;
+use common::server as http_server;
+
+/// Optimize responses carry only status and a JSON body.
+fn server(
+    responses: Vec<(u16, Value)>,
+) -> (String, std::thread::JoinHandle<Vec<(String, Value)>>) {
+    http_server(responses, |_| String::new())
+}
 
 fn settings(url: &str) -> LlmSettings {
     LlmSettings {

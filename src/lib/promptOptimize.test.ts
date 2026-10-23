@@ -50,9 +50,8 @@ function draft(over: Partial<Draft> = {}): Draft {
   };
 }
 
-// 默认模型回落（空模型 → gpt-4.1-mini）与家族模板/单轮消息契约由
-// src-tauri 的 llm.rs 内联测试和 tests/prompt_optimize.rs 在真实请求路径上覆盖；
-// TS 侧仅保留打包上下文与版本守卫这两段独有行为。
+// 空模型默认、家族模板与单轮消息由 Rust 覆盖（llm.rs、tests/prompt_optimize.rs）。
+// 这里保留前端独有行为：上下文打包、版本守卫、取消不写回，以及失败码分类。
 
 test("packed context includes draft fields and never pixels or prior turns", () => {
   const text = packOptimizeContext(draft());
